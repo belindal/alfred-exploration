@@ -28,7 +28,6 @@ from tqdm import tqdm
 # python models/train/train_transformer.py --data data/json_feat_2.1.0 --model seq2seq_im_mask --dout exp/model:{model},name:pm_and_subgoals_01 --splits data/splits/oct21.json --gpu --batch 8 --pm_aux_loss_wt 0.1 --subgoal_aux_loss_wt 0.1
 class ALFREDDataloader(DataLoader):
     def __init__(self, args, vocab, dataset, split_type, batch_size, sep_actions: bool):
-        super().__init__(dataset, batch_size, collate_fn=self.collate_fn)
         self.vocab = vocab
         self.args = args
         # params
@@ -40,7 +39,7 @@ class ALFREDDataloader(DataLoader):
         self.vis_encoder = ResnetVisualEncoder(dframe=self.image_input_dim)
         for param in self.vis_encoder.parameters():
             param.requires_grad = False
-        self.dataset = [self.load_task_json(task, args.data, args.pp_folder) for task in self.dataset]
+        self.dataset = [self.load_task_json(task, args.data, args.pp_folder) for task in dataset]
 
         if "train" in split_type or "valid" in split_type:
             # self.dataset = self.featurize(self.dataset)
@@ -107,6 +106,7 @@ class ALFREDDataloader(DataLoader):
                         new_dataset.append(new_ex)
                     prev_subgoals += subgoal
                 self.dataset = new_dataset
+        super().__init__(self.dataset, batch_size, collate_fn=self.collate_fn)
 
 
     def decompress_mask(self, compressed_mask):
@@ -247,7 +247,7 @@ class ALFREDDataloader(DataLoader):
         with open(json_path) as f:
             data = json.load(f)
         return data
-    
+
     def pad_stack(self, data: list):
         max_item_len = max([len(item) for item in data])
         data = [torch.cat([
@@ -383,7 +383,7 @@ if __name__ == '__main__':
     # debugging
     parser.add_argument('--fast_epoch', help='fast epoch during debugging', action='store_true')
     parser.add_argument('--dataset_fraction', help='use fraction of the dataset for debugging (0 indicates full size)', default=0, type=int)
-    
+
     # args and init
     args = parser.parse_args()
     args.dout = args.dout.format(**vars(args))
@@ -425,7 +425,7 @@ if __name__ == '__main__':
         else:
             splits[split_type] = splits[split_type][:1000]
         dl_splits[split_type] = ALFREDDataloader(args, vocab, splits[split_type], split_type, args.batch, sep_actions)
-    
+
     # load model
     # model = T5ForConditionalGeneration.from_pretrained('t5-small').to('cuda')
     model = GoalConditionedTransformer()
