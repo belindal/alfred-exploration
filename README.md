@@ -39,7 +39,8 @@ The main files that I added for the Transformer training are `models/train/train
 
 ## Evaluating the Transformer
 ```bash
-python3 models/eval/eval_seq2seq.py --model_path models/pretrained/transformer.pth --eval_split valid_seen --data data/json_feat_2.1.0 --model models.model.t5 --gpu --num_threads 1```
+python3 models/eval/eval_seq2seq.py --model_path models/pretrained/transformer.pth --eval_split valid_seen --data data/json_feat_2.1.0 --model models.model.t5 --gpu --num_threads 1
+```
 
 - When this starts working for real, increase num_threads from 1 to e.g 3
 - Also when this starts working we can delete the call to sys.exit() in eval_task.py
