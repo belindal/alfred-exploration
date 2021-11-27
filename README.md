@@ -39,7 +39,7 @@ The main files that I added for the Transformer training are `models/train/train
 
 ## Evaluating the Transformer
 ```bash
-python3 models/eval/eval_seq2seq.py --model_path models/pretrained/transformer.pth --eval_split valid_seen --data data/json_feat_2.1.0 --model models.model.t5 --gpu --num_threads 1``
+python3 models/eval/eval_seq2seq.py --model_path models/pretrained/transformer.pth --eval_split valid_seen --data data/json_feat_2.1.0 --model models.model.t5 --gpu --num_threads 1```
 
 - When this starts working for real, increase num_threads from 1 to e.g 3
 - Also when this starts working we can delete the call to sys.exit() in eval_task.py
@@ -47,6 +47,6 @@ python3 models/eval/eval_seq2seq.py --model_path models/pretrained/transformer.p
 Rough summary of changes made in this branch
 - move the super constructor call in the ALFREDDataLoader (models/train/train_transformer.py) to the end of the constructor (without this I was getting complaints about self.dataset being changed)
 - added saving/loading model functionality in train_transformer.py and models/model/t5.py respectively
-- modify test_generate in t5.py so that image_sequence_padded was the right shape
-- add a featurize function to t5.py that takes information about the episode and connverts it into a form that can be part of the input to test_generate
+- modify test_generate in t5.py so that image_sequence_padded was the right shape 
+- add a featurize function to t5.py that takes information about the episode and connverts it into a form that can be part of the input to test_generate (this still doesn't run past t=0, so stacking the images to make a history is still a TODO)
 - modify models/eval/eval_task.py to load the GoalConditionedTransformer and pass output from the environment/task description into the model and then decode the output (the main changes happened here)
