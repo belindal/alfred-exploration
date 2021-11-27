@@ -1,10 +1,13 @@
+import os
 import torch
+import json
 from torch import nn
 from transformers import AutoConfig, AutoModelForSeq2SeqLM, T5ForConditionalGeneration, T5Tokenizer
 
 class GoalConditionedTransformer(nn.Module):
-    def __init__(self, concat_dim=1024, hidden_dim=512,random_init=0):
+    def __init__(self, concat_dim=1024, hidden_dim=512,random_init=0, args=None):
         super(GoalConditionedTransformer, self).__init__()
+        self.args = args
         if random_init==1:
             config = AutoConfig.from_pretrained('t5-small')
             self.model = AutoModelForSeq2SeqLM.from_config(config)
@@ -43,10 +46,52 @@ class GoalConditionedTransformer(nn.Module):
         action_sequence_shifted[..., 0] = self.model.config.decoder_start_token_id
 
         # pad `image_sequence`
-        image_sequence_padded = torch.cat([image_sequence[:,0,...].unsqueeze(1), image_sequence], dim=1)
+        image_sequence_padded = torch.cat([image_sequence[:,0,...].unsqueeze(1), image_sequence], dim=1).view(*action_sequence.size(), -1)
         embedded_action_sequence = self.model.decoder.embed_tokens(action_sequence_shifted)
         fused_action_image_rep = self.fusion_module(torch.cat([embedded_action_sequence, image_sequence_padded], dim=-1))
 
         action_sequence[action_sequence[:, :] == self.tokenizer.pad_token_id] = -100
         return self.model.generate(input_ids=goal_representation,
                           decoder_inputs_embeds=fused_action_image_rep,max_length=300,do_sample=True, top_k=50, top_p=0.95, num_return_sequences=1)
+
+    @classmethod
+    def load(cls, args, fsave):
+        model = cls(args=args)
+        model.load_state_dict(torch.load(fsave))
+        return model
+
+    def load_task_json(self, task):
+        '''
+        load preprocessed json from disk
+        '''
+        json_path = os.path.join(self.args.data, task['task'], '%s' % self.args.pp_folder, 'ann_%d.json' % task['repeat_idx'])
+        with open(json_path) as f:
+            data = json.load(f)
+        return data
+
+    def pad_stack(self, data: list):
+        max_item_len = max([len(item) for item in data])
+        data = [torch.cat([
+            item, torch.zeros(max_item_len - item.size(0), *item.size()[1:]).to(item.device, item.dtype)
+        ], dim=0) for item in data]
+        return torch.stack(data)
+
+    def featurize(self, batch):
+        device = torch.device('cuda') if self.args.gpu else torch.device('cpu')
+        feat = {
+            'all_states': [],
+            'all_actions': [],
+            'all_actions_mask': [],
+            "goal_representation": [],
+        }
+        for item in batch:
+            # dict_keys(['ann', 'images', 'num', 'pddl_params', 'plan', 'repeat_idx', 'root', 'scene', 'split', 'task_id', 'task_type', 'turk_annotations'])
+            feat['goal_representation'] = ' '.join(item['ann']['goal'])
+            # TODO: trim <<goal>> and <<stop>> from goal rep?
+            for instr in item['ann']['instr']:
+                feat['goal_representation'] += (' '.join(instr))
+            feat['goal_representation'] = self.tokenizer.encode(feat['goal_representation'])
+            feat['goal_representation'] = torch.tensor([feat['goal_representation']], dtype=torch.int).to(device)
+
+        return feat
+

@@ -1,6 +1,8 @@
 import os
+import sys
 import json
 import numpy as np
+import torch
 from PIL import Image
 from datetime import datetime
 from eval import Eval
@@ -35,6 +37,7 @@ class EvalTask(Eval):
                 import traceback
                 traceback.print_exc()
                 print("Error: " + repr(e))
+                sys.exit()
 
         # stop THOR
         env.stop()
@@ -43,14 +46,14 @@ class EvalTask(Eval):
     @classmethod
     def evaluate(cls, env, model, r_idx, resnet, traj_data, args, lock, successes, failures, results):
         # reset model
-        model.reset()
+        #model.reset()
 
         # setup scene
         reward_type = 'dense'
         cls.setup_scene(env, traj_data, r_idx, args, reward_type=reward_type)
 
         # extract language features
-        feat = model.featurize([traj_data], load_mask=False)
+        feat = model.featurize([traj_data])
 
         # goal instr
         goal_instr = traj_data['turk_annotations']['anns'][r_idx]['task_desc']
@@ -66,11 +69,15 @@ class EvalTask(Eval):
 
             # extract visual features
             curr_image = Image.fromarray(np.uint8(env.last_event.frame))
-            feat['frames'] = resnet.featurize([curr_image], batch=1).unsqueeze(0)
+            feat['all_states'] = resnet.featurize([curr_image], batch=1).unsqueeze(0)
 
             # forward model
-            m_out = model.step(feat)
-            m_pred = model.extract_preds(m_out, [traj_data], feat, clean_special_tokens=False)
+            # little confused what actions should look like at t=0
+            print("t: ", t)
+            m_out = model.test_generate(feat["goal_representation"], torch.zeros(2, 7, 7, 1, dtype=torch.int).to('cuda'), feat["all_states"], None, None)
+            m_pred = model.tokenizer.decode(m_out[0])
+            print(m_pred)
+            #m_pred = model.extract_preds(m_out, [traj_data], feat, clean_special_tokens=False)
             m_pred = list(m_pred.values())[0]
 
             # check if <<stop>> was predicted

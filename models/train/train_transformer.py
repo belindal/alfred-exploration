@@ -428,7 +428,7 @@ if __name__ == '__main__':
 
     # load model
     # model = T5ForConditionalGeneration.from_pretrained('t5-small').to('cuda')
-    model = GoalConditionedTransformer()
+    model = GoalConditionedTransformer(args=args)
     if args.gpu:
         model = model.to('cuda')
     all_parameters = [p for p in model.parameters() if p.requires_grad]
@@ -458,8 +458,8 @@ if __name__ == '__main__':
             pbar.set_description(f"training loss: {loss.item()}")
             loss.backward()
             optimizer.step()
-
         # evaluate
         for batch, feat in dl_splits['valid_seen']:
             #TODO
             continue
+    torch.save(model.state_dict(), "models/pretrained/transformer.pth")
