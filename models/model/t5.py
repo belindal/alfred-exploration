@@ -69,13 +69,6 @@ class GoalConditionedTransformer(nn.Module):
             data = json.load(f)
         return data
 
-    def pad_stack(self, data: list):
-        max_item_len = max([len(item) for item in data])
-        data = [torch.cat([
-            item, torch.zeros(max_item_len - item.size(0), *item.size()[1:]).to(item.device, item.dtype)
-        ], dim=0) for item in data]
-        return torch.stack(data)
-
     def featurize(self, batch):
         device = torch.device('cuda') if self.args.gpu else torch.device('cpu')
         feat = {
