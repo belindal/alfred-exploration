@@ -30,6 +30,7 @@ if __name__ == '__main__':
     parser.add_argument('--gpu', dest='gpu', action='store_true')
     parser.add_argument('--use_templated_goals', help='use templated goals instead of human-annotated goal descriptions (only available for train set)', action='store_true')
     parser.add_argument('--num_threads', type=int, default=1)
+    parser.add_argument('--pp_folder', help='folder name for preprocessed data', default='pp')
 
     # eval params
     parser.add_argument('--max_steps', type=int, default=1000, help='max steps before episode termination')
