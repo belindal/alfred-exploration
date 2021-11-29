@@ -33,6 +33,8 @@ python models/train/train_transformer.py --data data/json_feat_2.1.0 --model seq
 ```
 Add `--preprocess` the first time you run. In subsequent runs, you can remove this flag.
 
+Add `--fast_epoch` for debugging.
+
 This will by default train on a 1000-file subset of the training data (out of 21023 files total). Can increase this number by modifying this LOC: https://github.com/belindal/alfred-exploration/blob/main/models/train/train_transformer.py#L426
 
 The main files that I added for the Transformer training are `models/train/train_transformer.py` and `models/model/t5.py`.
