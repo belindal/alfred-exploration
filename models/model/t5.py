@@ -27,8 +27,11 @@ class GoalConditionedTransformer(nn.Module):
         action_sequence_shifted[..., 0] = self.model.config.decoder_start_token_id
 
         # pad `image_sequence`
+        # (bs, n_tokens, image_dim)
         image_sequence_padded = torch.cat([image_sequence[:,0,...].unsqueeze(1), image_sequence], dim=1).view(*action_sequence.size(), -1)
+        # (bs, n_tokens, word_embed_dim)
         embedded_action_sequence = self.model.decoder.embed_tokens(action_sequence_shifted)
+        # (bs, n_tokens, word_embed_dim + image_dim) -> (bs, n_tokens, fusion_output_dim)
         fused_action_image_rep = self.fusion_module(torch.cat([embedded_action_sequence, image_sequence_padded], dim=-1))
 
         action_sequence[action_sequence[:, :] == self.tokenizer.pad_token_id] = -100
