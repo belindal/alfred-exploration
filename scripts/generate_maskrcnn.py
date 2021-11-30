@@ -6,7 +6,7 @@ import os
 from datetime import datetime
 
 import torchvision
-#from allennlp.modules.vision.region_detector import RegionDetectorOutput
+from allennlp.modules.vision.region_detector import RegionDetectorOutput
 from torch import Tensor
 from torchvision.models.detection.roi_heads import maskrcnn_inference
 from torchvision.transforms import transforms
@@ -24,7 +24,7 @@ import tqdm as tqdm
 from allennlp.data import TorchImageLoader
 from torch.utils.data import IterableDataset, DataLoader
 
-from grolp.envs.thor_env import ThorEnv
+#from grolp.envs.thor_env import ThorEnv
 import torchvision.ops.boxes as box_ops
 import torch.nn.functional as F
 

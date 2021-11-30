@@ -2,12 +2,14 @@ import torch
 import torch.nn as nn
 
 import torchvision
+from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
 
 
 class MaskRCNN(nn.Module):
     def __init__(self, **kwargs):
         super().__init__()
-        self.save_hyperparameters(kwargs)
+        #self.save_hyperparameters(kwargs)
         # load an instance segmentation model pre-trained on COCO
         if "inference_params" in kwargs:
             inference_params = kwargs.get("inference_params")
