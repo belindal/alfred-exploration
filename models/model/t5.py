@@ -1,5 +1,6 @@
 import os
 import torch
+import numpy as np
 import json
 from torch import nn
 from transformers import AutoConfig, AutoModelForSeq2SeqLM, T5ForConditionalGeneration, T5Tokenizer
@@ -30,13 +31,13 @@ class GoalConditionedTransformer(nn.Module):
         action_sequence_shifted[..., 1:] = action_sequence[..., :-1].clone()
         action_sequence_shifted[..., 0] = self.model.config.decoder_start_token_id
 
-        # align `image_sequence` to inputs `action_sequence_shifted`
+        # pad `image_sequence`
         # (bs, n_tokens, image_dim)
-        image_sequence_shifted = torch.cat([image_sequence[:,0,...].unsqueeze(1), image_sequence], dim=1).view(*action_sequence.size(), -1)
+        image_sequence_padded = torch.cat([image_sequence[:,0,...].unsqueeze(1), image_sequence], dim=1).view(*action_sequence.size(), -1)
         # (bs, n_tokens, word_embed_dim)
         embedded_action_sequence = self.model.decoder.embed_tokens(action_sequence_shifted)
         # (bs, n_tokens, word_embed_dim + image_dim) -> (bs, n_tokens, fusion_output_dim)
-        fused_action_image_rep = self.fusion_module(torch.cat([embedded_action_sequence, image_sequence_shifted], dim=-1))
+        fused_action_image_rep = self.fusion_module(torch.cat([embedded_action_sequence, image_sequence_padded], dim=-1))
 
         labels = action_sequence.clone()
         labels[labels[:, :] == self.tokenizer.pad_token_id] = -100
@@ -115,7 +116,10 @@ class GoalConditionedTransformer(nn.Module):
     @classmethod
     def load(cls, args, fsave):
         model = cls(args=args)
-        model.load_state_dict(torch.load(fsave))
+        if args.gpu:
+            model.load_state_dict(torch.load(fsave)) 
+        else:
+            model.load_state_dict(torch.load(fsave, map_location=torch.device('cpu')))
         return model
 
     def load_task_json(self, task):
@@ -141,8 +145,47 @@ class GoalConditionedTransformer(nn.Module):
             # TODO: trim <<goal>> and <<stop>> from goal rep?
             for instr in item['ann']['instr']:
                 feat['goal_representation'][-1] += (''.join([i.rstrip() for i in instr])).replace('  ', ' ').strip()
-        feat['goal_representation'] = self.tokenizer(feat['goal_representation'], return_tensors='pt', padding=True).to("cuda")
+        feat['goal_representation'] = self.tokenizer(feat['goal_representation'], return_tensors='pt', padding=True)
+        if self.args.gpu:
+            feat['goal_representation'] = feat['goal_representation'].to("cuda")
         #feat['goal_representation'] = torch.tensor([feat['goal_representation']], dtype=torch.int).to(device)
 
         return feat
+    
+    @classmethod
+    def generate_naive_action_mask(cls, _action, _curr_image):
+        m = np.zeros((300, 300))
+        m[140:160, 140:160] = 1
+        return m
 
+    def decode_prediction(self, m_out, curr_image):
+        # TODO: Maybe cast all actions to be within the 13 valid tokens.
+        # Also this is a good place to add in the exploration
+        action = self.tokenizer.decode(m_out[0], skip_special_tokens=True).split(" ")[0]
+        mask = (
+            self.generate_naive_action_mask(action, curr_image)
+            if self.has_interaction(action)
+            else None
+        )
+        return {
+            "action_low": action,
+            "action_low_mask": mask,
+        }
+
+    @classmethod
+    def has_interaction(cls, action):
+        """
+        check if low-level action is interactive
+        """
+        non_interact_actions = [
+            "MoveAhead",
+            "Rotate",
+            "Look",
+            "<<stop>>",
+            "<<pad>>",
+            "<<seg>>",
+        ]
+        if any(a in action for a in non_interact_actions):
+            return False
+        else:
+            return True
