@@ -5,7 +5,7 @@ import numpy as np
 from PIL import Image
 from datetime import datetime
 from env.thor_env import ThorEnv
-from eval import Eval
+from models.eval.eval import Eval
 
 
 class EvalSubgoals(Eval):
