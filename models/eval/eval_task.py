@@ -74,8 +74,8 @@ class EvalTask(Eval):
             # forward model
             # little confused what actions should look like at t=0
             print("t: ", t)
-            m_out = model.test_generate(feat["goal_representation"], torch.zeros(2, 7, 7, 1, dtype=torch.int).to('cuda'), feat["all_states"], None, None)
-            m_pred = model.tokenizer.decode(m_out[0])
+            m_out = model.test_generate(feat["goal_representation"], torch.zeros(2, 7, 7, 1, dtype=torch.int).to('cuda'), feat["all_states"])
+            m_pred = model.tokenizer.decode(m_out, skip_special_tokens=True).split(' ')[0]
             print(m_pred)
             #m_pred = model.extract_preds(m_out, [traj_data], feat, clean_special_tokens=False)
             m_pred = list(m_pred.values())[0]
