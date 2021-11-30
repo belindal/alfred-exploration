@@ -7,6 +7,7 @@ import torch.multiprocessing as mp
 from models.nn.resnet import Resnet
 from data.preprocess import Dataset
 from importlib import import_module
+from scripts.generate_maskrcnn import create_panorama, MaskRCNNDetector
 
 class Eval(object):
 
@@ -19,6 +20,8 @@ class Eval(object):
         # args and manager
         self.args = args
         self.manager = manager
+        self.region_detector = MaskRCNNDetector(
+                checkpoint_path="storage/models/vision/moca_maskrcnn/weight_maskrcnn.pt")
 
         # load splits
         with open(self.args.splits) as f:
@@ -82,16 +85,18 @@ class Eval(object):
         spawn multiple threads to run eval in parallel
         '''
         task_queue = self.queue_tasks()
-
         # start threads
         threads = []
         lock = self.manager.Lock()
+        self.run(self.model, self.resnet, task_queue, self.args, lock,
+                                                   self.successes, self.failures, self.results)
+        """
         for n in range(self.args.num_threads):
             thread = mp.Process(target=self.run, args=(self.model, self.resnet, task_queue, self.args, lock,
                                                        self.successes, self.failures, self.results))
             thread.start()
             threads.append(thread)
-
+        """
         for t in threads:
             t.join()
 
@@ -135,3 +140,64 @@ class Eval(object):
 
     def create_stats(self):
         raise NotImplementedError()
+
+    @classmethod
+    def get_visual_features(cls, env, image_loader, region_detector, args,
+                            cuda_device):
+        # collect current robot view
+        panorama_images, camera_infos = create_panorama(env, args.rotation_steps - 1)
+
+        images, sizes = image_loader(panorama_images, pack=True)
+
+        # FasterRCNN feature extraction for the current frame
+        if cuda_device >= 0:
+            images = images.to(cuda_device)
+
+        detector_results = region_detector(images)
+
+        object_features = []
+
+        for i in range(len(detector_results)):
+            num_boxes = args.panoramic_boxes[i]
+            features = detector_results[i]["features"]
+            coordinates = detector_results[i]["boxes"]
+            class_probs = detector_results[i]["scores"]
+            class_labels = detector_results[i]["labels"]
+            masks = detector_results[i]["masks"]
+
+            if coordinates.shape[0] > 0:
+                coordinates = coordinates.cpu().numpy()
+                center_coords = (coordinates[:, 0] + coordinates[:, 2]) // 2, (
+                        coordinates[:, 1] + coordinates[:, 3]) // 2
+
+                h_angle, v_angle = calculate_angles(
+                    center_coords[0],
+                    center_coords[1],
+                    camera_infos[i]["h_view_angle"],
+                    camera_infos[i]["v_view_angle"]
+                )
+
+                boxes_angles = np.stack([h_angle, v_angle], 1)
+            else:
+                boxes_angles = np.zeros((coordinates.shape[0], 2))
+                coordinates = coordinates.cpu().numpy()
+
+            box_features = features[:num_boxes]
+            boxes_angles = boxes_angles[:num_boxes]
+            boxes = coordinates[:num_boxes]
+            masks = masks[:num_boxes]
+            class_probs = class_probs[:num_boxes]
+            class_labels = class_labels[:num_boxes]
+
+            object_features.append(dict(
+                box_features=box_features.cpu().numpy(),
+                roi_angles=boxes_angles,
+                boxes=boxes,
+                masks=(masks > 0.5).cpu().numpy(),
+                class_probs=class_probs.cpu().numpy(),
+                class_labels=class_labels.cpu().numpy(),
+                camera_info=camera_infos[i],
+                num_objects=box_features.shape[0]
+            ))
+
+        return object_features

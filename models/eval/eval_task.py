@@ -7,6 +7,7 @@ from PIL import Image
 from datetime import datetime
 from eval import Eval
 from env.thor_env import ThorEnv
+from scripts.generate_maskrcnn import MaskRCNNDetector, CustomImageLoader
 
 class EvalTask(Eval):
     '''
@@ -74,8 +75,11 @@ class EvalTask(Eval):
             # forward model
             # little confused what actions should look like at t=0
             print("t: ", t)
-            m_out = model.test_generate(feat["goal_representation"], torch.zeros(2, 7, 7, 1, dtype=torch.int).to('cuda'), feat["all_states"])
-            m_pred = model.tokenizer.decode(m_out, skip_special_tokens=True).split(' ')[0]
+            print("pad token id: ", model.tokenizer.pad_token_id)
+            m_out = model.test_generate(feat["goal_representation"], model.tokenizer.pad_token_id*torch.ones(2, 7, 7, 1, dtype=torch.int).to('cuda'), feat["all_states"])
+            #print(m_out.logits.shape)
+            breakpoint()
+            m_pred = model.tokenizer.decode(m_out[0], skip_special_tokens=True).split(' ')[0]
             print(m_pred)
             #m_pred = model.extract_preds(m_out, [traj_data], feat, clean_special_tokens=False)
             m_pred = list(m_pred.values())[0]
