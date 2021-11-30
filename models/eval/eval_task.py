@@ -7,6 +7,7 @@ from PIL import Image
 from datetime import datetime
 from eval import Eval
 from env.thor_env import ThorEnv
+from models.model.t5 import vis_encoder
 
 class EvalTask(Eval):
     '''
@@ -47,6 +48,7 @@ class EvalTask(Eval):
     def evaluate(cls, env, model, r_idx, resnet, traj_data, args, lock, successes, failures, results):
         # reset model
         #model.reset()
+        model = model.to('cuda')
 
         # setup scene
         reward_type = 'dense'
@@ -69,12 +71,15 @@ class EvalTask(Eval):
 
             # extract visual features
             curr_image = Image.fromarray(np.uint8(env.last_event.frame))
-            feat['all_states'] = resnet.featurize([curr_image], batch=1).unsqueeze(0)
+            feat['all_states'] = resnet.featurize([curr_image], batch=1)
+            feat['all_states'] = vis_encoder(feat['all_states'].cpu()).unsqueeze(0)
+            feat['all_states'] = feat['all_states'].to("cuda")
 
             # forward model
             # little confused what actions should look like at t=0
             print("t: ", t)
-            m_out = model.test_generate(feat["goal_representation"], torch.zeros(2, 7, 7, 1, dtype=torch.int).to('cuda'), feat["all_states"])
+            m_out = model.test_generate(feat["goal_representation"]['input_ids'], torch.zeros((1,2), dtype=torch.int).to('cuda'), feat["all_states"], i_mask=feat["goal_representation"]["attention_mask"], o_mask=torch.ones((1, 2), dtype=torch.int).to('cuda'))
+            breakpoint()
             m_pred = model.tokenizer.decode(m_out[0], skip_special_tokens=True).split(' ')[0]
             print(m_pred)
             #m_pred = model.extract_preds(m_out, [traj_data], feat, clean_special_tokens=False)

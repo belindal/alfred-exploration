@@ -4,6 +4,9 @@ import json
 from torch import nn
 from transformers import AutoConfig, AutoModelForSeq2SeqLM, T5ForConditionalGeneration, T5Tokenizer
 import torch.nn.functional as F
+from models.nn.vnn import ResnetVisualEncoder
+
+vis_encoder = ResnetVisualEncoder(dframe=512)
 
 class GoalConditionedTransformer(nn.Module):
     def __init__(self, concat_dim=1024, hidden_dim=512,random_init=0, args=None):
@@ -103,7 +106,7 @@ class GoalConditionedTransformer(nn.Module):
             o_mask[torch.arange(bs),last_token_pos] = 1
         # bs x n_tokens
         output_actions = torch.stack(output_actions, dim=1)
-                
+
         # transformer_inputs = self.setup_inputs(goal_representation, action_sequence, image_sequence,i_mask,o_mask)
         # return self.model.generate(input_ids=goal_representation, decoder_inputs_embeds=fused_action_image_rep, max_length=10, do_sample=False)
         #                             # max_length=10,do_sample=True, top_k=50, top_p=0.95, num_return_sequences=1)
@@ -134,12 +137,12 @@ class GoalConditionedTransformer(nn.Module):
         }
         for item in batch:
             # dict_keys(['ann', 'images', 'num', 'pddl_params', 'plan', 'repeat_idx', 'root', 'scene', 'split', 'task_id', 'task_type', 'turk_annotations'])
-            feat['goal_representation'] = ''.join([g.rstrip() for g in item['ann']['goal']]).replace('  ', ' ').strip()
+            feat['goal_representation'].append(''.join([g.rstrip() for g in item['ann']['goal']]).replace('  ', ' ').strip())
             # TODO: trim <<goal>> and <<stop>> from goal rep?
             for instr in item['ann']['instr']:
-                feat['goal_representation'] += (''.join([i.rstrip() for i in instr])).replace('  ', ' ').strip()
-            feat['goal_representation'] = self.tokenizer.encode(feat['goal_representation'])
-            feat['goal_representation'] = torch.tensor([feat['goal_representation']], dtype=torch.int).to(device)
+                feat['goal_representation'][-1] += (''.join([i.rstrip() for i in instr])).replace('  ', ' ').strip()
+        feat['goal_representation'] = self.tokenizer(feat['goal_representation'], return_tensors='pt', padding=True).to("cuda")
+        #feat['goal_representation'] = torch.tensor([feat['goal_representation']], dtype=torch.int).to(device)
 
         return feat
 
