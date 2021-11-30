@@ -48,13 +48,15 @@ class GoalConditionedTransformer(nn.Module):
     def train_forward(self, goal_representation, action_sequence, image_sequence,i_mask,o_mask):
         transformer_inputs = self.setup_inputs(goal_representation, action_sequence, image_sequence,i_mask,o_mask)
         model_outs = self.model(**transformer_inputs)
-        # self.tokenizer.decode(transformer_inputs['input_ids'][0].argmax())
-        # self.tokenizer.decode(model_outs.logits[0,0].argmax()) #"Look"
-        # import pdb; pdb.set_trace()
-        # generation = self.model.generate(input_ids=transformer_inputs['input_ids'], attention_mask=i_mask, decoder_inputs_embeds=transformer_inputs['decoder_inputs_embeds'], decoder_attention_mask=o_mask,)
         return model_outs
 
     def test_generate(self, goal_representation, action_sequence, image_sequence, i_mask=None, o_mask=None):
+        """
+        goal_representation: (bs, # tokens in goal)
+        action_sequence: (bs, tok_len of action sequence)
+        image_sequence: (bs, tok_len of action sequence, image_dim)
+        i_mask: 
+        """
         # action_sequence_shifted = F.pad(input=action_sequence, pad=(1,0,0,0), value=self.model.config.decoder_start_token_id)
         # add <bos> tokens and remove <eos> tokens
         # (bs, n_tokens)
@@ -105,7 +107,7 @@ class GoalConditionedTransformer(nn.Module):
         # transformer_inputs = self.setup_inputs(goal_representation, action_sequence, image_sequence,i_mask,o_mask)
         # return self.model.generate(input_ids=goal_representation, decoder_inputs_embeds=fused_action_image_rep, max_length=10, do_sample=False)
         #                             # max_length=10,do_sample=True, top_k=50, top_p=0.95, num_return_sequences=1)
-        return output_actions
+        return output_actions, o_mask
 
     @classmethod
     def load(cls, args, fsave):
