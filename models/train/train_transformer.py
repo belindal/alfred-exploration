@@ -349,12 +349,12 @@ if __name__ == '__main__':
                 o_mask=feat['action_seq_w_curr']['attention_mask'],
             )
             acc = dl_splits['valid_seen'].compute_metrics(outputs, feat)['accuracy']
-            eval_iter.set_description(f"valid (seen) loss: {loss} // accuracy: {acc}")
             best_acc += acc
             best_loss += loss
             n_batches += 1
-        best_acc = acc / n_batches if n_batches > 0 else 0
-        best_loss = loss / n_batches if n_batches > 0 else 0
+            eval_iter.set_description(f"valid (seen) loss: {best_loss / n_batches} // accuracy: {best_acc / n_batches}")
+        best_acc = best_acc / n_batches if n_batches > 0 else 0
+        best_loss = best_loss / n_batches if n_batches > 0 else 0
         print(f"Initial valid (seen) loss: {best_loss} // accuracy: {best_acc}")
     # """
 
