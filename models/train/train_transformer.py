@@ -54,7 +54,7 @@ class ALFREDDataloader(DataLoader):
             new_dataset = []
             for task in tqdm(dataset):
                 ex = self.load_task_json(task, args.data, args.pp_folder)
-                goal = self.vocab['word'].index2word(ex['num']['lang_goal'])
+                goal = [g.rstrip() for g in ex['ann']['goal']]
 
                 # load Resnet features from disk
                 root = self.get_task_root(ex)
@@ -78,11 +78,11 @@ class ALFREDDataloader(DataLoader):
                 all_frames = self.vis_encoder(all_frames)
                 assert all_frames.size(0) == num_low_actions
 
-                assert len(ex['num']['lang_instr']) == len(ex['num']['action_low'])
+                assert len(ex['ann']['instr']) == len(ex['num']['action_low'])
                 prev_subgoals = []
                 action_sequence = []
                 action_mask_sequence = []
-                all_subgoals = [self.vocab['word'].index2word(subgoal) + ['.'] for subgoal in ex['num']['lang_instr']]
+                all_subgoals = [[sg.rstrip() for sg in subgoal] for subgoal in ex['ann']['instr']]
                 all_subgoals_flattened = list(it.chain(*all_subgoals))
                 action_idx = 0
                 for subgoal_idx, subgoal in enumerate(all_subgoals):
@@ -160,7 +160,7 @@ class ALFREDDataloader(DataLoader):
             # 'goal', 'curr_subgoal', 'prev_subgoals', 'all_subgoals', '{state|action|action_mask}_{history|next|seq}',
             # if gt_alignment:
             #     feat['input_goals'].append(' '.join(item['goal'] + item['prev_subgoals'] + item['curr_subgoal']))
-            feat['input_goals'].append(' '.join(item['goal'] + item['all_subgoals']))
+            feat['input_goals'].append(''.join(item['goal'] + item['all_subgoals']).replace('  ', ' ').strip())
 
             # expand `state_seq` and `action_mask_seq` for each token of `action_seq`
             expanded_seqs = {f'{seq_type}_{seq_span}': [] for seq_type in ['state', 'action_mask'] for seq_span in ['seq_w_curr', 'seq_past', 'curr']}
@@ -216,6 +216,7 @@ if __name__ == '__main__':
     parser.add_argument('--data', help='dataset folder', default='data/json_feat_2.1.0')
     parser.add_argument('--train_size', help='amount of training data to use', default=1000, type=int)
     parser.add_argument('--splits', help='json file containing train/dev/test splits', default='splits/oct21.json')
+    parser.add_argument('--save_path', help='path to save to', default='models/pretrained/transformer.pth')
     parser.add_argument('--preprocess', help='store preprocessed data to json files', action='store_true')
     parser.add_argument('--pp_folder', help='folder name for preprocessed data', default='pp')
     parser.add_argument('--save_every_epoch', help='save model after every epoch (warning: consumes a lot of space)', action='store_true')
@@ -303,7 +304,7 @@ if __name__ == '__main__':
 
     # load model
     # model = T5ForConditionalGeneration.from_pretrained('t5-small').to('cuda')
-    save_path = "models/pretrained/transformer.pth"
+    save_path = args.save_path
     if os.path.exists(save_path):
         model = GoalConditionedTransformer.load(args, save_path)
     else:
@@ -356,6 +357,7 @@ if __name__ == '__main__':
         # train
         model.train()
         train_iter = tqdm(dl_splits['train'], desc='training loss')
+        step = 0
         for batch, feat in train_iter:
             optimizer.zero_grad()
             # 'input_goals', 'state_seq', 'action_seq', 'action_mask_seq'
@@ -372,6 +374,10 @@ if __name__ == '__main__':
             train_iter.set_description(f"training loss: {loss.item()}")
             loss.backward()
             optimizer.step()
+
+            step += 1
+            if step%100 == 0:
+                torch.save(model.state_dict(), f"{save_path[:-4]}_ep{epoch}_step{step}.pth")
 
         # evaluate
         model.eval()
@@ -409,3 +415,4 @@ if __name__ == '__main__':
                 torch.save(model.state_dict(), save_path)
                 best_loss = epoch_loss
                 best_acc = epoch_acc
+        torch.save(model.state_dict(), f"{save_path[:-4]}_ep{epoch}.pth")

@@ -87,10 +87,10 @@ class GoalConditionedTransformer(nn.Module):
         }
         for item in batch:
             # dict_keys(['ann', 'images', 'num', 'pddl_params', 'plan', 'repeat_idx', 'root', 'scene', 'split', 'task_id', 'task_type', 'turk_annotations'])
-            feat['goal_representation'] = ' '.join(item['ann']['goal'])
+            feat['goal_representation'] = ''.join([g.rstrip() for g in item['ann']['goal']]).replace('  ', ' ').strip()
             # TODO: trim <<goal>> and <<stop>> from goal rep?
             for instr in item['ann']['instr']:
-                feat['goal_representation'] += (' '.join(instr))
+                feat['goal_representation'] += (''.join([i.rstrip() for i in instr])).replace('  ', ' ').strip()
             feat['goal_representation'] = self.tokenizer.encode(feat['goal_representation'])
             feat['goal_representation'] = torch.tensor([feat['goal_representation']], dtype=torch.int).to(device)
 
