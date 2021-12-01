@@ -58,12 +58,12 @@ class GoalConditionedTransformer(nn.Module):
         model_outs = self.model(**transformer_inputs)
         return model_outs
 
-    def test_generate(self, goal_representation, action_seq_past, image_seq_w_curr, i_mask=None, o_mask=None):
+    def test_generate(self, goal_representation, action_seq_past, image_seq_w_curr, i_mask=None, o_mask=None, topk=1):
         """
         goal_representation: (bs, # tokens in goal)
         action_seq_past: (bs, tok_len of action sequence history)
         image_seq_w_curr: (bs, tok_len of action sequence history + tok_len of curr action/1, image_dim) [+1 for end of next state]
-        i_mask: 
+        i_mask:
         """
         # # action_sequence_shifted = F.pad(input=action_sequence, pad=(1,0,0,0), value=self.model.config.decoder_start_token_id)
         # # add <bos> tokens and remove <eos> tokens
@@ -114,12 +114,18 @@ class GoalConditionedTransformer(nn.Module):
             for idx in range(bs)
         ])
         ended_actions = torch.zeros(bs).bool().to(self.device)
-        for _ in range(15):
+        for unroll_idx in range(15):
             model_output = self.model(
                 input_ids=goal_representation, attention_mask=i_mask,
                 decoder_inputs_embeds=fused_action_image_rep, decoder_attention_mask=action_sequence_mask,
             )
-            next_logit_scores, next_logits = model_output.logits[torch.arange(bs),last_token_pos].max(-1)
+            if unroll_idx == 0:
+                next_logit_score_dist, next_logits_dist = model_output.logits[torch.arange(bs),last_token_pos].topk(topk, dim=-1)
+                scores_dist = torch.distributions.Categorical(logits = next_logit_score_dist)
+                sampled_action_idx = scores_dist.sample()
+                next_logit_scores, next_logits = next_logit_score_dist[torch.arange(bs), sampled_action_idx], next_logits_dist[torch.arange(bs),sampled_action_idx]
+            else:
+                next_logit_scores, next_logits = model_output.logits[torch.arange(bs),last_token_pos].max(-1)
             next_image = image_sequence[torch.arange(bs),last_token_pos]  # repeat current state
             # if the action has ended, next token must be padding
             next_logit_scores[ended_actions] = 0  # P(pad after end) = 1
@@ -160,7 +166,7 @@ class GoalConditionedTransformer(nn.Module):
     def load(cls, args, fsave):
         model = cls(args=args)
         if args.gpu:
-            model.load_state_dict(torch.load(fsave)) 
+            model.load_state_dict(torch.load(fsave))
         else:
             model.load_state_dict(torch.load(fsave, map_location=torch.device('cpu')))
         return model
@@ -197,13 +203,13 @@ class GoalConditionedTransformer(nn.Module):
             'attention_mask': torch.Tensor(len(batch),0).long().to(self.device),
         }
         return feat
-    
+
     @classmethod
     def generate_naive_action_mask(cls, _action, _curr_image, _curr_image_features):
         m = np.zeros((300, 300))
         m[140:160, 140:160] = 1
         return m
-    
+
     @classmethod
     def generate_action_mask(cls, action, curr_image, image_obj_features):
         m = np.zeros((300, 300))
@@ -212,15 +218,19 @@ class GoalConditionedTransformer(nn.Module):
         object_names = object_names.split(' in ')
         if len(object_names) == 0: return None
         # ["table", "chair"]
-        breakpoint()
         obj_label2feature_idx = {CLASSES[label]: i for i, label in enumerate(image_obj_features["class_labels"])}
         obj_masks = []
         for obj_name in object_names:
-            obj_idx = obj_label2feature_idx[self.snake_to_camel(obj_name)]
+            try:
+                obj_idx = obj_label2feature_idx[cls.snake_to_camel(obj_name)]
+            except Exception as e:
+                print("trying to interact with an object not in the scene")
+                breakpoint()
             obj_masks.append(image_obj_features['masks'][obj_idx][0])
         return m
 
-    def snake_to_camel(self, action_str):
+    @classmethod
+    def snake_to_camel(cls, action_str):
         """
         for all actions and all objects unsnake case and camel case.
         re-add numbers
@@ -234,7 +244,7 @@ class GoalConditionedTransformer(nn.Module):
             action_str += "_90"
         if action_str.startswith("Move"):  # MoveAhead_25
             action_str += "_25"
-        return action_str
+        return action_str[0].upper() + action_str[1:]
 
     def decode_prediction(self, m_out, curr_image, object_features):
         # TODO: Maybe cast all actions to be within the 13 valid tokens.
@@ -242,7 +252,7 @@ class GoalConditionedTransformer(nn.Module):
         action = self.tokenizer.decode(m_out, skip_special_tokens=True).split(",")[0].strip()
         # convert BACK to API action!!!
         api_action = self.snake_to_camel(action.split(':')[0].strip())
-        assert api_action in API_ACTIONS
+        assert api_action in API_ACTIONS, f"{api_action} is not part of {API_ACTIONS}!"
         mask = (
             self.generate_action_mask(action, curr_image, object_features)
             if self.has_interaction(action)

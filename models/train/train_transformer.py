@@ -464,6 +464,7 @@ if __name__ == '__main__':
                     i_mask=feat['input_goals']['attention_mask'],
                     o_mask=feat['action_seq_w_curr']['attention_mask'],
                 ).loss
+                breakpoint()
                 outputs, _ = model.test_generate(
                     goal_representation=feat['input_goals']['input_ids'],
                     action_seq_past=feat['action_seq_past']['input_ids'],
@@ -484,4 +485,5 @@ if __name__ == '__main__':
                 torch.save(model.state_dict(), save_path)
                 best_loss = epoch_loss
                 best_acc = epoch_acc
-        torch.save(model.state_dict(), f"{save_path[:-4]}_ep{epoch}.pth")
+        #torch.save(model.state_dict(), f"{save_path[:-4]}_ep{epoch}.pth")
+

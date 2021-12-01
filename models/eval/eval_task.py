@@ -9,9 +9,10 @@ from datetime import datetime
 from models.eval.eval import Eval
 from env.thor_env import ThorEnv
 from scripts.generate_maskrcnn import MaskRCNNDetector, CustomImageLoader
-from models.model.t5 import vis_encoder
+from models.model.t5 import vis_encoder, API_ACTIONS
 from models.utils.debug_utils import plot_mask
 import gen.constants
+import random
 
 class EvalTask(Eval):
     '''
@@ -85,42 +86,21 @@ class EvalTask(Eval):
             feat['all_states'] = torch.cat([state_history.cpu(), curr_state], dim=1)
 
             object_features = cls.get_visual_features(env, image_loader, region_detector, args, device)
-            # maybe the first dim of object_features corresponds to batch size? idk
-            # object_features[0]["masks"] : (num_objects, 1, 300, 300)
-            # object_features[0]["class_probs"]: (num_objects)
-            # object_features[0]["class_labels"]: (num_objects)
-            # for feature in object_features:
-            #     for i, label in enumerate(feature["class_labels"]):
-            #         if feature["class_probs"][i] > 0.8:
-            #             print(label)
-            #             print(classes[label])
-            #     #plt.imshow(feature["masks"][0][0])
-            #     #plt.show()
 
             # forward model
             print("t: ", t)
-            if vars(args)["gpu"]:
-                m_out = model.test_generate(
-                    feat["goal_representation"]["input_ids"],
-                    feat['actions']['input_ids'],
-                    feat["all_states"].to("cuda"),
-                    i_mask=feat["goal_representation"]["attention_mask"],
-                    o_mask=feat['actions']['attention_mask'],
-                )
-            else:
-                m_out = model.test_generate(
-                    feat["goal_representation"]["input_ids"].to("cpu"),
-                    feat['actions']['input_ids'].to("cpu"),
-                    feat["all_states"].to("cpu"),
-                    i_mask=feat["goal_representation"]["attention_mask"].to("cpu"),
-                    o_mask=feat['actions']['attention_mask'].to("cpu"),
-                )
+            m_out = model.test_generate(
+                feat["goal_representation"]["input_ids"].to(device),
+                feat['actions']['input_ids'].to(device),
+                feat["all_states"].to(device),
+                i_mask=feat["goal_representation"]["attention_mask"].to(device),
+                o_mask=feat['actions']['attention_mask'].to(device),
+            )
             feat['actions']['input_ids'] = m_out['action_seq']
             feat['actions']['attention_mask'] = m_out['action_seq_mask']
             state_history = m_out['states_seq']
             m_pred = model.decode_prediction(m_out['actions'][0], curr_image, object_features[0])
-            print(m_pred)
-
+            #print(m_pred)
             # check if <<stop>> was predicted
             if m_pred['action_low'] == cls.STOP_TOKEN:
                 print("\tpredicted STOP")
@@ -129,13 +109,20 @@ class EvalTask(Eval):
             # get action and mask
             action, mask = m_pred['action_low'], m_pred['action_low_mask']
             mask = mask if model.has_interaction(action) else None
+            if random.random() < 0.0:
+                #action = random.choice(API_ACTIONS)
+                action = random.choice(["RotateRight_90", "RotateLeft_90"])
+                if "_" in action:
+                    mask = None
+                else:
+                    mask = object_features[0]["masks"][0][0]
 
-            if args.debug:
-                plot_mask(feature["masks"][0][0], 'mask.png')
+            #if args.debug:
+            #    plot_mask(feature["masks"][0][0], 'mask.png')
 
             # print action
-            if args.debug:
-                print(action)
+            #if args.debug:
+            print(action)
             # use predicted action and mask (if available) to interact with the env
             t_success, _, _, err, _ = env.va_interact(action, interact_mask=mask, smooth_nav=args.smooth_nav, debug=args.debug)
             if not t_success:
@@ -143,6 +130,8 @@ class EvalTask(Eval):
                 if fails >= args.max_fails:
                     print("Interact API failed %d times" % fails + "; latest error '%s'" % err)
                     break
+            else:
+                fails = 0
 
             # next time-step
             t_reward, t_done = env.get_transition_reward()
