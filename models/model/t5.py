@@ -26,18 +26,16 @@ class GoalConditionedTransformer(nn.Module):
     def setup_inputs(self, goal_representation, action_sequence, image_sequence,i_mask,o_mask):
         # encode goal with T5 encoder
         # assume action_sequence doesn't have start id
+        # (bs, n_tokens,)
         action_sequence_shifted = action_sequence.new_zeros(action_sequence.shape)
         # action_sequence_shifted[..., 1:] = action_sequence_shifted[..., :-1].clone()
         action_sequence_shifted[..., 1:] = action_sequence[..., :-1].clone()
         action_sequence_shifted[..., 0] = self.model.config.decoder_start_token_id
 
-        # pad `image_sequence`
-        # (bs, n_tokens, image_dim)
-        image_sequence_padded = torch.cat([image_sequence[:,0,...].unsqueeze(1), image_sequence], dim=1).view(*action_sequence.size(), -1)
         # (bs, n_tokens, word_embed_dim)
         embedded_action_sequence = self.model.decoder.embed_tokens(action_sequence_shifted)
         # (bs, n_tokens, word_embed_dim + image_dim) -> (bs, n_tokens, fusion_output_dim)
-        fused_action_image_rep = self.fusion_module(torch.cat([embedded_action_sequence, image_sequence_padded], dim=-1))
+        fused_action_image_rep = self.fusion_module(torch.cat([embedded_action_sequence, image_sequence], dim=-1))
 
         labels = action_sequence.clone()
         labels[labels[:, :] == self.tokenizer.pad_token_id] = -100
@@ -53,65 +51,80 @@ class GoalConditionedTransformer(nn.Module):
         transformer_inputs = self.setup_inputs(goal_representation, action_sequence, image_sequence,i_mask,o_mask)
         model_outs = self.model(**transformer_inputs)
         return model_outs
+    
+    def make_generate_inputs(self, goal_representation, action_sequence, image_sequence):
+        breakpoint()
+
 
     def test_generate(self, goal_representation, action_sequence, image_sequence, i_mask=None, o_mask=None):
         """
         goal_representation: (bs, # tokens in goal)
-        action_sequence: (bs, tok_len of action sequence)
-        image_sequence: (bs, tok_len of action sequence, image_dim)
+        action_sequence: (bs, 1 + tok_len of action sequence)  [+1 for bos token]
+        image_sequence: (bs, tok_len of action sequence + 1, image_dim) [+1 for end of next state]
         i_mask: 
         """
-        # action_sequence_shifted = F.pad(input=action_sequence, pad=(1,0,0,0), value=self.model.config.decoder_start_token_id)
-        # add <bos> tokens and remove <eos> tokens
-        # (bs, n_tokens)
-        action_sequence_shifted = action_sequence.new_zeros(action_sequence.shape)
-        action_sequence_shifted[..., 1:] = action_sequence[..., :-1].clone()
-        action_sequence_shifted[..., 0] = self.model.config.decoder_start_token_id
-        # action_sequence_shifted[action_sequence_shifted == self.tokenizer.eos_token_id] = self.tokenizer.pad_token_id
-        # (bs, n_tokens+1, image_dim)
-        image_sequence_shifted = torch.cat([image_sequence[:,0,...].unsqueeze(1), image_sequence], dim=1).view(*action_sequence.size(), -1)
-        embedded_action_sequence = self.model.decoder.embed_tokens(action_sequence_shifted)
+        # # action_sequence_shifted = F.pad(input=action_sequence, pad=(1,0,0,0), value=self.model.config.decoder_start_token_id)
+        # # add <bos> tokens and remove <eos> tokens
+        # # (bs, n_tokens)
+        # action_sequence_shifted = action_sequence.new_zeros(action_sequence.shape)
+        # action_sequence_shifted[..., 1:] = action_sequence[..., :-1].clone()
+        # action_sequence_shifted[..., 0] = self.model.config.decoder_start_token_id
+        # # action_sequence_shifted[action_sequence_shifted == self.tokenizer.eos_token_id] = self.tokenizer.pad_token_id
+        # if image_sequence.size(1) != action_sequence_shifted.size(1):
+        #     breakpoint()
+        #     assert image_sequence.size(1) + 1 == action_sequence_shifted.size(1)
+        #     # (bs, n_tokens+1, image_dim)
+        #     image_sequence_shifted = torch.cat([image_sequence[:,0,...].unsqueeze(1), image_sequence], dim=1).view(*action_sequence.size(), -1)
+        # else:
+        #     # (bs, n_tokens+1)
+        #     image_sequence_shifted = image_sequence.clone()
+        embedded_action_sequence = self.model.decoder.embed_tokens(action_sequence)
         # (bs, n_tokens+1, linear_out_dim)
-        fused_action_image_rep = self.fusion_module(torch.cat([embedded_action_sequence, image_sequence_shifted], dim=-1))
+        fused_action_image_rep = self.fusion_module(torch.cat([embedded_action_sequence, image_sequence], dim=-1))
 
-        output_actions = []
+        scores = []
         bs = goal_representation.size(0)
-        # transformer_inputs = self.setup_inputs(goal_representation, action_sequence, image_sequence,i_mask,o_mask)
-        # model_outs = self.model(**transformer_inputs)
         # greedy search
         # pad all tok_len dimensions by 10
         action_sequence_shifted = F.pad(action_sequence_shifted, pad=(0,10,0,0), value=self.tokenizer.pad_token_id)
         image_sequence_shifted = F.pad(image_sequence_shifted, pad=(0,0,0,10,0,0), value=0)
         fused_action_image_rep = F.pad(fused_action_image_rep, pad=(0,0,0,10,0,0), value=0)
         o_mask = F.pad(o_mask, pad=(0,10,0,0), value=0)
-        # for i in range(bs):
-        #     output_actions.append([])
-        #     last_token_pos = (action_sequence_shifted[i] == self.tokenizer.eos_token_id).nonzero() - 1
-        #     fused_action_image_rep_item = fused_action_image_rep[i]  #[:last_token_pos + 1]
-        last_token_pos = (action_sequence == self.tokenizer.eos_token_id).nonzero()[:,1]
+        breakpoint()
+        last_token_pos = (action_sequence == self.tokenizer.pad_token_id).nonzero()[:,1]
         for _ in range(10):
             model_output = self.model(input_ids=goal_representation, attention_mask=i_mask, decoder_inputs_embeds=fused_action_image_rep, decoder_attention_mask=o_mask)
-            next_logits = model_output.logits[torch.arange(bs),last_token_pos].argmax(-1)
+            next_logit_scores, next_logits = model_output.logits[torch.arange(bs),last_token_pos].max(-1)
             # [(bs) x n_tokens]
-            output_actions.append(next_logits)
+            scores.append(next_logit_scores)
+            """
             # break on whitespace -- next action
             all_actions_generated_whitespace = True
             for logit in next_logits: all_actions_generated_whitespace &= self.tokenizer.decode(logit).startswith(' ')
             if all_actions_generated_whitespace: break
+            """
             # add token to sequence
             last_token_pos += 1
+            # (bs, n_tokens+1)
             action_sequence_shifted[torch.arange(bs),last_token_pos] = next_logits
             embedded_action_sequence = self.model.decoder.embed_tokens(action_sequence_shifted)
+            # (bs, n_tokens+1, image_dim)
             image_sequence_shifted[torch.arange(bs),last_token_pos] = image_sequence_shifted[torch.arange(bs),last_token_pos-1]  # repeat last state (across token)
             fused_action_image_rep = self.fusion_module(torch.cat([embedded_action_sequence, image_sequence_shifted], dim=-1))
+            # (bs, n_tokens+1)
             o_mask[torch.arange(bs),last_token_pos] = 1
-        # bs x n_tokens
-        output_actions = torch.stack(output_actions, dim=1)
-
-        # transformer_inputs = self.setup_inputs(goal_representation, action_sequence, image_sequence,i_mask,o_mask)
-        # return self.model.generate(input_ids=goal_representation, decoder_inputs_embeds=fused_action_image_rep, max_length=10, do_sample=False)
-        #                             # max_length=10,do_sample=True, top_k=50, top_p=0.95, num_return_sequences=1)
-        return output_actions, o_mask
+        # add EOS token and prune padding
+        # (bs, n_tokens+1)
+        action_sequence_shifted[..., :-1] = action_sequence_shifted[..., 1:].clone()
+        action_sequence_shifted[..., last_token_pos] = self.tokenizer.eos_token_id
+        # (bs, n_tokens, image_dim) -- remove image at position corresponding to eos_token_id
+        image_sequence_shifted = image_sequence_shifted[:, :last_token_pos, :]
+        o_mask_token_n_item = o_mask.sum(0)
+        action_sequence_shifted = action_sequence_shifted[:, o_mask_token_n_item > 0]
+        o_mask = o_mask[:, o_mask_token_n_item > 0]
+        # bs x n_tokens -> bs
+        scores = -torch.stack(scores, dim=1).sum(-1)
+        return {'actions': action_sequence_shifted, 'mask': o_mask, 'states': image_sequence_shifted, 'log_probs': scores}
 
     @classmethod
     def load(cls, args, fsave):
@@ -134,22 +147,23 @@ class GoalConditionedTransformer(nn.Module):
     def featurize(self, batch):
         device = torch.device('cuda') if self.args.gpu else torch.device('cpu')
         feat = {
-            'all_states': [],
-            'all_actions': [],
-            'all_actions_mask': [],
+            # 'all_states': [],
+            # 'actions': [],
+            # 'actions_mask': [],
             "goal_representation": [],
         }
         for item in batch:
             # dict_keys(['ann', 'images', 'num', 'pddl_params', 'plan', 'repeat_idx', 'root', 'scene', 'split', 'task_id', 'task_type', 'turk_annotations'])
-            feat['goal_representation'].append(''.join([g.rstrip() for g in item['ann']['goal']]).replace('  ', ' ').strip())
+            feat['goal_representation'].append(
+                ''.join([g.rstrip() for g in item['ann']['goal']]).replace('<<goal>>', ' [goal]').replace('<<stop>>', ' [stop]').replace('  ', ' ').strip()
+            )
             # TODO: trim <<goal>> and <<stop>> from goal rep?
             for instr in item['ann']['instr']:
-                feat['goal_representation'][-1] += (''.join([i.rstrip() for i in instr])).replace('  ', ' ').strip()
-        feat['goal_representation'] = self.tokenizer(feat['goal_representation'], return_tensors='pt', padding=True)
-        if self.args.gpu:
-            feat['goal_representation'] = feat['goal_representation'].to("cuda")
-        #feat['goal_representation'] = torch.tensor([feat['goal_representation']], dtype=torch.int).to(device)
-
+                feat['goal_representation'][-1] += (
+                    ''.join([i.rstrip() for i in instr])
+                ).replace('<<goal>>', ' [goal]').replace('<<stop>>', ' [stop]').replace('  ', ' ').strip()
+        feat['goal_representation'] = self.tokenizer(feat['goal_representation'], return_tensors='pt', padding=True).to(device)
+        feat['actions'] = self.tokenizer(["" for item in batch], return_tensors='pt', padding=True).to(device)
         return feat
     
     @classmethod

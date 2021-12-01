@@ -25,6 +25,7 @@ from models.model.t5 import GoalConditionedTransformer
 from tqdm import tqdm
 import itertools as it
 import random
+import regex as re
 random.seed(0)
 
 
@@ -81,17 +82,36 @@ class ALFREDDataloader(DataLoader):
                 assert len(ex['ann']['instr']) == len(ex['num']['action_low'])
                 prev_subgoals = []
                 action_sequence = []
+                action_args_sequence = []
                 action_mask_sequence = []
                 all_subgoals = [[sg.rstrip() for sg in subgoal] for subgoal in ex['ann']['instr']]
                 all_subgoals_flattened = list(it.chain(*all_subgoals))
-                action_idx = 0
+                frame_idx = 0
+                api_actions_by_subgoal = self.get_api_actions_by_subgoals(ex, all_subgoals)
                 for subgoal_idx, subgoal in enumerate(all_subgoals):
                     # in terms of the action vocabulary
                     # subgoal_actions = self.vocab['action_high'].index2word(ex['num']['action_high'][subgoal_idx]['action'])
-                    for action in ex['num']['action_low'][subgoal_idx]:
+                    for action_idx, action in enumerate(ex['num']['action_low'][subgoal_idx]):
                         action_low = self.vocab['action_low'].index2word(action['action'])
-                        #self.action_space.add(action_low)
-                        action_sequence.append(action_low)
+                        action_nl = action_low
+                        if action_low == '<<stop>>':
+                            # special case where api_actions_by_subgoal[subgoal_idx] will be empty
+                            action_args_sequence.append({})
+                        else:
+                            if (action_idx >= len(api_actions_by_subgoal[subgoal_idx])) or (subgoal_idx >= len(api_actions_by_subgoal)):
+                                # For whatever reason there is one misaligned example
+                                continue
+                            api_action = api_actions_by_subgoal[subgoal_idx][action_idx]
+                            assert (
+                                api_action["action"] == action_low
+                            ), "Action must match to action_low otherwise our action_args sequence is all screwy"
+                            action_args = self.process_action_args(api_action)
+                            action_args_sequence.append(action_args)
+                            if 'object' in action_args:
+                                action_nl += ": " + action_args['object'].strip()
+                            if 'receptacle' in action_args:
+                                action_nl += " in " + action_args['receptacle']
+                        action_sequence.append(self.unCamelSnakeCase(action_nl).replace('  ', ' '))
                         if action['mask'] is not None:
                             assert action['valid_interact'] == 1
                         else:
@@ -100,15 +120,19 @@ class ALFREDDataloader(DataLoader):
                         if curr_action_mask is not None and self.action_mask_dim is None:
                             self.action_mask_dim = curr_action_mask.size()
                         action_mask_sequence.append(curr_action_mask)
-                        action_idx += 1
-
+                        frame_idx += 1
                         new_ex = {
-                            'goal': goal,
+                            "goal": goal,
                             # make copies of lists
-                            'all_subgoals': all_subgoals_flattened, 'prev_subgoals': [sg for sg in prev_subgoals], 'curr_subgoal': subgoal,
-                            'state_seq': all_frames[:action_idx], 'action_seq': [a for a in action_sequence], 'action_mask_seq': [am for am in action_mask_sequence],
+                            "all_subgoals": all_subgoals_flattened,
+                            "prev_subgoals": [sg for sg in prev_subgoals],
+                            "curr_subgoal": subgoal,
+                            "state_seq": all_frames[:frame_idx],
+                            "action_seq": [a for a in action_sequence],
+                            "action_mask_seq": [am for am in action_mask_sequence],
+                            "action_args_seq": [arg for arg in action_args_sequence]
                         }
-                        assert len(new_ex['state_seq']) == len(new_ex['action_seq']) == len(new_ex['action_mask_seq'])
+                        assert len(new_ex['state_seq']) == len(new_ex['action_seq']) == len(new_ex['action_mask_seq']) == len(new_ex['action_args_seq'])
                         new_dataset.append(new_ex)
                     prev_subgoals += subgoal
         else:
@@ -117,6 +141,43 @@ class ALFREDDataloader(DataLoader):
                 new_dataset.append(self.load_task_json(task, args.data, args.pp_folder))
         super().__init__(new_dataset, batch_size, collate_fn=self.collate_fn)
 
+    def unCamelSnakeCase(self, action_str):
+        """
+        for all actions and all objects uncamel case and unsnake case.
+        Also remove all nubmers
+        """
+        return re.sub(r'((?=[A-Z])|(\d+)|_|  )', ' ', action_str).lower().strip()
+
+
+    def process_action_args(self, api_action):
+        '''
+        example api_action:
+        {
+            "action": "PutObject",
+            "forceAction": True,
+            "objectId": "ButterKnife|+00.29|+00.93|+00.99",
+            "placeStationary": True,
+            "receptacleObjectId": "Mug|-00.16|+00.93|+00.08",
+        }
+        '''
+        args = {}
+        if 'objectId' in api_action and api_action['objectId'].find('|') > 0:
+            objId = api_action['objectId']
+            args['object'] = objId[:objId.find('|')]
+        if 'receptacleObjectId' in api_action and api_action['receptacleObjectId'].find('|') > 0:
+            recpId = api_action['receptacleObjectId']
+            args['receptacle'] = recpId[:recpId.find('|')]
+        return args
+
+    def get_api_actions_by_subgoals(self, ex, all_subgoals):
+        api_actions_by_subgoal = {subgoal_idx: [] for subgoal_idx in range(len(all_subgoals))}
+        for la in ex["plan"]["low_actions"]:
+            api_action = la["api_action"]
+            api_action['action'] = la["discrete_action"]['action']
+            api_actions_by_subgoal[la["high_idx"]] = api_actions_by_subgoal[
+                la["high_idx"]
+            ] + [api_action]
+        return api_actions_by_subgoal
 
     def decompress_mask(self, compressed_mask):
         '''
@@ -165,7 +226,7 @@ class ALFREDDataloader(DataLoader):
             # 'goal', 'curr_subgoal', 'prev_subgoals', 'all_subgoals', '{state|action|action_mask}_{history|next|seq}',
             # if gt_alignment:
             #     feat['input_goals'].append(' '.join(item['goal'] + item['prev_subgoals'] + item['curr_subgoal']))
-            feat['input_goals'].append(''.join(item['goal'] + item['all_subgoals']).replace('  ', ' ').strip())
+            feat['input_goals'].append(''.join(item['goal'] + item['all_subgoals']).replace('<<goal>>', ' [goal]').replace('<<stop>>', ' [stop]').replace('  ', ' ').strip())
 
             # expand `state_seq` and `action_mask_seq` for each token of `action_seq`
             expanded_seqs = {f'{seq_type}_{seq_span}': [] for seq_type in ['state', 'action_mask'] for seq_span in ['seq_w_curr', 'seq_past', 'curr']}
@@ -193,7 +254,7 @@ class ALFREDDataloader(DataLoader):
             assert feat['action_mask_seq_w_curr'][-1].size(0) == feat['state_seq_w_curr'][-1].size(0)
         for key in feat:
             if type(feat[key][0]) == str:
-                feat[key] = self.tokenizer(feat[key], return_tensors='pt', padding=True).to(device)
+                feat[key] = self.tokenizer(feat[key], return_tensors='pt', padding=True, add_special_tokens=(False if 'action' in key else True)).to(device)
             elif type(feat[key][0]) == torch.Tensor:
                 feat[key] = self.pad_stack(feat[key], pad_id=-100 if key=='mask' else 0)
             else:
@@ -325,7 +386,7 @@ if __name__ == '__main__':
     # initial evaluation
     best_acc = 0.0
     best_loss = float("inf")
-    # """
+    """
     model.eval()
     with torch.no_grad():
         # eval_iter = tqdm(dl_splits['valid_seen'], desc='valid (seen)')
@@ -335,8 +396,6 @@ if __name__ == '__main__':
         n_batches = 0
         for batch, feat in eval_iter:
             # 'input_goals', 'state_seq', 'action_seq', 'action_mask_seq'
-            #TODO
-            # 'input_goals', 'state_seq', 'action_seq', 'action_mask_seq'
             all_outputs = model.train_forward(
                 goal_representation=feat['input_goals']['input_ids'],
                 action_sequence=feat['action_seq_w_curr']['input_ids'],
@@ -345,13 +404,13 @@ if __name__ == '__main__':
                 o_mask=feat['action_seq_w_curr']['attention_mask'],
             )
             loss = all_outputs.loss
-            outputs, _ = model.test_generate(
+            outputs = model.test_generate(
                 goal_representation=feat['input_goals']['input_ids'],
                 action_sequence=feat['action_seq_w_curr']['input_ids'],
                 image_sequence=feat['state_seq_w_curr'],
                 i_mask=feat['input_goals']['attention_mask'],
                 o_mask=feat['action_seq_w_curr']['attention_mask'],
-            )
+            )['actions']
             acc = dl_splits['valid_seen'].compute_metrics(outputs, feat)['accuracy']
             best_acc += acc
             best_loss += loss
@@ -388,7 +447,7 @@ if __name__ == '__main__':
             optimizer.step()
 
             step += 1
-            if step%100 == 0:
+            if step%500 == 0:
                 torch.save(model.state_dict(), f"{save_path[:-4]}_ep{epoch}_step{step}.pth")
 
         # evaluate
@@ -413,7 +472,7 @@ if __name__ == '__main__':
                     goal_representation=feat['input_goals']['input_ids'],
                     action_sequence=feat['action_seq_past']['input_ids'],
                     image_sequence=feat['state_seq_past'],
-                )
+                )['actions']
                 acc = dl_splits['valid_seen'].compute_metrics(outputs, feat)['accuracy']
                 epoch_loss += loss
                 epoch_acc += acc
