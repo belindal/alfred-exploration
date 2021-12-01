@@ -24,7 +24,7 @@ class Eval(object):
         self.args = args
         self.manager = manager
         self.region_detector = MaskRCNNDetector(
-                checkpoint_path="storage/models/vision/moca_maskrcnn/weight_maskrcnn.pt")
+                checkpoint_path="/home/sahit/alfred-exploration/storage/models/vision/moca_maskrcnn/weight_maskrcnn.pt")
         self.region_detector.eval()
         self.image_loader = CustomImageLoader(min_size = self.args.frame_size, max_size=self.args.frame_size)
 

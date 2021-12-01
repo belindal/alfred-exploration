@@ -84,7 +84,6 @@ class EvalTask(Eval):
             curr_image = Image.fromarray(np.uint8(env.last_event.frame))
             curr_state = resnet.featurize([curr_image], batch=1)
             curr_state = vis_encoder(curr_state.cpu()).unsqueeze(0)
-            breakpoint()
             feat['all_states'] = torch.cat([curr_state, state_history.cpu()], dim=1)
 
             object_features = cls.get_visual_features(env, image_loader, region_detector, args, device)
@@ -92,17 +91,18 @@ class EvalTask(Eval):
             # object_features[0]["masks"] : (num_objects, 1, 300, 300)
             # object_features[0]["class_probs"]: (num_objects)
             # object_features[0]["class_labels"]: (num_objects)
-            for feature in object_features:
-                for i, label in enumerate(feature["class_labels"]):
-                    if feature["class_probs"][i] > 0.8:
-                        print(label)
-                        print(classes[label])
-                #plt.imshow(feature["masks"][0][0])
-                #plt.show()
+            # for feature in object_features:
+            #     for i, label in enumerate(feature["class_labels"]):
+            #         if feature["class_probs"][i] > 0.8:
+            #             print(label)
+            #             print(classes[label])
+            #     #plt.imshow(feature["masks"][0][0])
+            #     #plt.show()
 
             # forward model
             print("t: ", t)
             if vars(args)["gpu"]:
+                breakpoint()
                 m_out = model.test_generate(
                     feat["goal_representation"]["input_ids"],
                     feat['actions']['input_ids'],
@@ -118,9 +118,10 @@ class EvalTask(Eval):
                     i_mask=feat["goal_representation"]["attention_mask"].to("cpu"),
                     o_mask=feat['actions']['attention_mask'].to("cpu"),
                 )
-            feat['actions']['input_ids'] = m_out['actions']
-            feat['actions']['attention_mask'] = m_out['mask']
-            state_history = m_out['states']
+            breakpoint()
+            feat['actions']['input_ids'] = m_out['action_seq']
+            feat['actions']['attention_mask'] = m_out['action_seq_mask']
+            state_history = m_out['states_seq']
             m_pred = model.decode_prediction(m_out['actions'], curr_image)
             print(m_pred)
 
