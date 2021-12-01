@@ -111,7 +111,8 @@ class ALFREDDataloader(DataLoader):
                                 action_nl += ": " + action_args['object'].strip()
                             if 'receptacle' in action_args:
                                 action_nl += " in " + action_args['receptacle']
-                        action_sequence.append(self.unCamelSnakeCase(action_nl).replace('  ', ' '))
+                        action_nl = self.unCamelSnakeCase(action_nl).replace('  ', ' ')+','
+                        action_sequence.append(action_nl)
                         if action['mask'] is not None:
                             assert action['valid_interact'] == 1
                         else:
@@ -266,8 +267,8 @@ class ALFREDDataloader(DataLoader):
         n_total = 0
         for idx, pred in enumerate(preds):
             pred = self.tokenizer.decode(pred, skip_special_tokens=True)
-            pred = pred.split(' ')[0]  # segment out first generated action
-            gt = self.tokenizer.decode(data['action_curr']['input_ids'][idx], skip_special_tokens=True)
+            pred = pred.split(',')[0].strip()  # segment out first generated action
+            gt = self.tokenizer.decode(data['action_curr']['input_ids'][idx], skip_special_tokens=True).strip(',')
             n_correct += pred == gt
             n_total += 1
         return {'accuracy': n_correct / n_total}
@@ -383,10 +384,9 @@ if __name__ == '__main__':
     # initial evaluation
     best_acc = 0.0
     best_loss = float("inf")
-    """
+    # """
     model.eval()
     with torch.no_grad():
-        # eval_iter = tqdm(dl_splits['valid_seen'], desc='valid (seen)')
         eval_iter = tqdm(dl_splits['valid_seen'], desc='valid (seen)')
         best_acc = 0.0
         best_loss = 0.0
@@ -403,10 +403,10 @@ if __name__ == '__main__':
             loss = all_outputs.loss
             outputs = model.test_generate(
                 goal_representation=feat['input_goals']['input_ids'],
-                action_sequence=feat['action_seq_w_curr']['input_ids'],
-                image_sequence=feat['state_seq_w_curr'],
+                action_seq_past=feat['action_seq_past']['input_ids'],
+                image_seq_w_curr=feat['state_seq_w_curr'],
                 i_mask=feat['input_goals']['attention_mask'],
-                o_mask=feat['action_seq_w_curr']['attention_mask'],
+                o_mask=feat['action_seq_past']['attention_mask'],
             )['actions']
             acc = dl_splits['valid_seen'].compute_metrics(outputs, feat)['accuracy']
             best_acc += acc
@@ -467,14 +467,16 @@ if __name__ == '__main__':
                 ).loss
                 outputs, _ = model.test_generate(
                     goal_representation=feat['input_goals']['input_ids'],
-                    action_sequence=feat['action_seq_past']['input_ids'],
-                    image_sequence=feat['state_seq_past'],
+                    action_seq_past=feat['action_seq_past']['input_ids'],
+                    image_seq_w_curr=feat['state_seq_w_curr'],
+                    i_mask=feat['input_goals']['attention_mask'],
+                    o_mask=feat['action_seq_past']['attention_mask'],
                 )['actions']
                 acc = dl_splits['valid_seen'].compute_metrics(outputs, feat)['accuracy']
                 epoch_loss += loss
                 epoch_acc += acc
                 n_batches += 1
-                eval_iter.set_description(f"valid (seen) loss: {loss} // accuracy: {acc}")
+                eval_iter.set_description(f"valid (seen) loss: {epoch_loss / n_batches} // accuracy: {epoch_acc / n_batches}")
             epoch_loss = epoch_loss / n_batches if n_batches > 0 else 0
             epoch_acc = epoch_acc / n_batches if n_batches > 0 else 0
             print(f"Epoch {epoch} valid (seen) loss: {epoch_loss} // accuracy: {epoch_acc}")

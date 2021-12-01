@@ -52,15 +52,16 @@ class GoalConditionedTransformer(nn.Module):
         model_outs = self.model(**transformer_inputs)
         return model_outs
     
-    def make_generate_inputs(self, goal_representation, action_sequence, image_sequence):
+    def make_generate_inputs(self, action_sequence, image_sequence):
         breakpoint()
+        return action_sequence, image_sequence
 
 
-    def test_generate(self, goal_representation, action_sequence, image_sequence, i_mask=None, o_mask=None):
+    def test_generate(self, goal_representation, action_seq_past, image_seq_w_curr, i_mask=None, o_mask=None):
         """
         goal_representation: (bs, # tokens in goal)
-        action_sequence: (bs, 1 + tok_len of action sequence)  [+1 for bos token]
-        image_sequence: (bs, tok_len of action sequence + 1, image_dim) [+1 for end of next state]
+        action_seq_past: (bs, tok_len of action sequence history)
+        image_seq_w_curr: (bs, tok_len of action sequence history + tok_len of curr action/1, image_dim) [+1 for end of next state]
         i_mask: 
         """
         # # action_sequence_shifted = F.pad(input=action_sequence, pad=(1,0,0,0), value=self.model.config.decoder_start_token_id)
@@ -78,25 +79,45 @@ class GoalConditionedTransformer(nn.Module):
         # else:
         #     # (bs, n_tokens+1)
         #     image_sequence_shifted = image_sequence.clone()
+
+        """
+        Suppose action 0 has 4 tokens: [a0, a0, a0, a0]
+        [bos, a0, a0, a0, a0] = action_sequence
+        [s0,  s0, s0, s0, s1] = image_sequence
+        """
+        # (bs, n_tokens_in_history + 1)
+        action_sequence = F.pad(input=action_seq_past, pad=(1,0,0,0), value=self.model.config.decoder_start_token_id)  # prepend bos token
+        action_sequence_mask = F.pad(input=o_mask, pad=(1,0,0,0), value=1)
+        image_sequence = image_seq_w_curr[:,:action_seq_past.size(1)+1,:].clone()
+        assert image_sequence.size()[:2] == action_sequence.size()
+        # sanity check
+        if image_sequence.size(1) > 1:
+            assert not (image_sequence[:,-1,:] == image_sequence[:,-2,:]).all()
         embedded_action_sequence = self.model.decoder.embed_tokens(action_sequence)
-        # (bs, n_tokens+1, linear_out_dim)
+        # (bs, n_tokens_in_history + 1, linear_out_dim)
         fused_action_image_rep = self.fusion_module(torch.cat([embedded_action_sequence, image_sequence], dim=-1))
 
         scores = []
+        next_actions = []
         bs = goal_representation.size(0)
         # greedy search
         # pad all tok_len dimensions by 10
-        action_sequence_shifted = F.pad(action_sequence_shifted, pad=(0,10,0,0), value=self.tokenizer.pad_token_id)
-        image_sequence_shifted = F.pad(image_sequence_shifted, pad=(0,0,0,10,0,0), value=0)
+        # last token = first `0` token of mask
+        action_sequence = F.pad(action_sequence, pad=(0,10,0,0), value=self.tokenizer.pad_token_id)
+        image_sequence = F.pad(image_sequence, pad=(0,0,0,10,0,0), value=0)
         fused_action_image_rep = F.pad(fused_action_image_rep, pad=(0,0,0,10,0,0), value=0)
-        o_mask = F.pad(o_mask, pad=(0,10,0,0), value=0)
-        breakpoint()
-        last_token_pos = (action_sequence == self.tokenizer.pad_token_id).nonzero()[:,1]
+        action_sequence_mask = F.pad(action_sequence_mask, pad=(0,10,0,0), value=0)
+        last_token_pos = torch.stack([
+            (action_sequence[idx] == 6).nonzero().max()
+            if (action_sequence[idx] == 6).any() else torch.tensor(0).to(action_sequence[idx].device)
+            for idx in range(bs)
+        ])
         for _ in range(10):
-            model_output = self.model(input_ids=goal_representation, attention_mask=i_mask, decoder_inputs_embeds=fused_action_image_rep, decoder_attention_mask=o_mask)
+            model_output = self.model(input_ids=goal_representation, attention_mask=i_mask, decoder_inputs_embeds=fused_action_image_rep, decoder_attention_mask=action_sequence_mask)
             next_logit_scores, next_logits = model_output.logits[torch.arange(bs),last_token_pos].max(-1)
-            # [(bs) x n_tokens]
+            # [(bs) x n_gen_tokens]
             scores.append(next_logit_scores)
+            next_actions.append(next_logits)
             """
             # break on whitespace -- next action
             all_actions_generated_whitespace = True
@@ -106,25 +127,27 @@ class GoalConditionedTransformer(nn.Module):
             # add token to sequence
             last_token_pos += 1
             # (bs, n_tokens+1)
-            action_sequence_shifted[torch.arange(bs),last_token_pos] = next_logits
-            embedded_action_sequence = self.model.decoder.embed_tokens(action_sequence_shifted)
+            action_sequence[torch.arange(bs),last_token_pos] = next_logits
+            embedded_action_sequence = self.model.decoder.embed_tokens(action_sequence)
             # (bs, n_tokens+1, image_dim)
-            image_sequence_shifted[torch.arange(bs),last_token_pos] = image_sequence_shifted[torch.arange(bs),last_token_pos-1]  # repeat last state (across token)
-            fused_action_image_rep = self.fusion_module(torch.cat([embedded_action_sequence, image_sequence_shifted], dim=-1))
+            image_sequence[torch.arange(bs),last_token_pos] = image_sequence[torch.arange(bs),last_token_pos-1]  # repeat current state (across token)
+            fused_action_image_rep = self.fusion_module(torch.cat([embedded_action_sequence, image_sequence], dim=-1))
             # (bs, n_tokens+1)
-            o_mask[torch.arange(bs),last_token_pos] = 1
-        # add EOS token and prune padding
-        # (bs, n_tokens+1)
-        action_sequence_shifted[..., :-1] = action_sequence_shifted[..., 1:].clone()
-        action_sequence_shifted[..., last_token_pos] = self.tokenizer.eos_token_id
-        # (bs, n_tokens, image_dim) -- remove image at position corresponding to eos_token_id
-        image_sequence_shifted = image_sequence_shifted[:, :last_token_pos, :]
-        o_mask_token_n_item = o_mask.sum(0)
-        action_sequence_shifted = action_sequence_shifted[:, o_mask_token_n_item > 0]
-        o_mask = o_mask[:, o_mask_token_n_item > 0]
-        # bs x n_tokens -> bs
+            action_sequence_mask[torch.arange(bs),last_token_pos] = 1
+        # # add EOS token and prune padding
+        # # (bs, n_tokens+1)
+        # action_sequence[..., :-1] = action_sequence[..., 1:].clone()
+        # action_sequence[..., last_token_pos] = self.tokenizer.eos_token_id
+        # # (bs, n_tokens, image_dim) -- remove image at position corresponding to eos_token_id
+        # image_sequence = image_sequence[:, :last_token_pos, :]
+        # o_mask_token_n_item = o_mask.sum(0)
+        # action_sequence = action_sequence[:, o_mask_token_n_item > 0]
+        # o_mask = o_mask[:, o_mask_token_n_item > 0]
+        # bs x n_gen_tokens
+        next_actions = torch.stack(next_actions, dim=1)
+        # bs x n_gen_tokens -> bs
         scores = -torch.stack(scores, dim=1).sum(-1)
-        return {'actions': action_sequence_shifted, 'mask': o_mask, 'states': image_sequence_shifted, 'log_probs': scores}
+        return {'actions': next_actions, 'full_actions': action_sequence, 'mask': action_sequence_mask, 'states': image_sequence, 'log_probs': scores}
 
     @classmethod
     def load(cls, args, fsave):
@@ -175,7 +198,7 @@ class GoalConditionedTransformer(nn.Module):
     def decode_prediction(self, m_out, curr_image):
         # TODO: Maybe cast all actions to be within the 13 valid tokens.
         # Also this is a good place to add in the exploration
-        action = self.tokenizer.decode(m_out[0], skip_special_tokens=True).split(" ")[0]
+        action = self.tokenizer.decode(m_out[0], skip_special_tokens=True).split(",")[0].strip()
         mask = (
             self.generate_naive_action_mask(action, curr_image)
             if self.has_interaction(action)
@@ -195,7 +218,7 @@ class GoalConditionedTransformer(nn.Module):
             "MoveAhead",
             "Rotate",
             "Look",
-            "<<stop>>",
+            "[stop]",
             "<<pad>>",
             "<<seg>>",
         ]
