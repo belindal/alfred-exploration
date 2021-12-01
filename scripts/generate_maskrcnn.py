@@ -168,7 +168,6 @@ class MaskRCNNDetector(torch.nn.Module):
 
         images, targets = self.detector.transform(images)
 
-        breakpoint()
         image_features = self.detector.backbone(images.tensors)
         if isinstance(image_features, torch.Tensor):
             image_features = collections.OrderedDict([('0', image_features)])
