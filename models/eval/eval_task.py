@@ -9,7 +9,7 @@ from datetime import datetime
 from models.eval.eval import Eval
 from env.thor_env import ThorEnv
 from scripts.generate_maskrcnn import MaskRCNNDetector, CustomImageLoader
-from models.model.t5 import vis_encoder, API_ACTIONS
+from models.model.t5 import vis_encoder, API_ACTIONS, CLASSES, API_ACTIONS_NATURALIZED
 from models.utils.debug_utils import plot_mask
 import gen.constants
 import random
@@ -87,6 +87,7 @@ class EvalTask(Eval):
 
             object_features = cls.get_visual_features(env, image_loader, region_detector, args, device)
 
+            seen_objects = CLASSES[object_features[0]["class_labels"]]
             # forward model
             print("t: ", t)
             m_out = model.test_generate(
@@ -95,6 +96,7 @@ class EvalTask(Eval):
                 feat["all_states"].to(device),
                 i_mask=feat["goal_representation"]["attention_mask"].to(device),
                 o_mask=feat['actions']['attention_mask'].to(device),
+                object_list = seen_objects + API_ACTIONS_NATURALIZED
             )
             feat['actions']['input_ids'] = m_out['action_seq']
             feat['actions']['attention_mask'] = m_out['action_seq_mask']

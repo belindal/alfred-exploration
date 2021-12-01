@@ -58,7 +58,7 @@ class GoalConditionedTransformer(nn.Module):
         model_outs = self.model(**transformer_inputs)
         return model_outs
 
-    def test_generate(self, goal_representation, action_seq_past, image_seq_w_curr, i_mask=None, o_mask=None, topk=1):
+    def test_generate(self, goal_representation, action_seq_past, image_seq_w_curr, i_mask=None, o_mask=None, topk=1, object_list=None):
         """
         goal_representation: (bs, # tokens in goal)
         action_seq_past: (bs, tok_len of action sequence history)
@@ -119,13 +119,19 @@ class GoalConditionedTransformer(nn.Module):
                 input_ids=goal_representation, attention_mask=i_mask,
                 decoder_inputs_embeds=fused_action_image_rep, decoder_attention_mask=action_sequence_mask,
             )
+            # TODO(sahit): annotations
+            token_list= torch.Tensor([self.tokenizer.encode(alfredobject) for alfredobject in object_list]).flatten().to(self.device)
+            token_mask = torch.zeros(self.tokenizer.vocab_size()).to(self.device)
+            token_mask[token_list] = 1
+            breakpoint()
+
             if unroll_idx == 0:
-                next_logit_score_dist, next_logits_dist = model_output.logits[torch.arange(bs),last_token_pos].topk(topk, dim=-1)
+                next_logit_score_dist, next_logits_dist = model_output.logits[torch.arange(bs),last_token_pos][token_mask].topk(topk, dim=-1)
                 scores_dist = torch.distributions.Categorical(logits = next_logit_score_dist)
                 sampled_action_idx = scores_dist.sample()
                 next_logit_scores, next_logits = next_logit_score_dist[torch.arange(bs), sampled_action_idx], next_logits_dist[torch.arange(bs),sampled_action_idx]
             else:
-                next_logit_scores, next_logits = model_output.logits[torch.arange(bs),last_token_pos].max(-1)
+                next_logit_scores, next_logits = model_output.logits[torch.arange(bs),last_token_pos][token_mask].max(-1)
             next_image = image_sequence[torch.arange(bs),last_token_pos]  # repeat current state
             # if the action has ended, next token must be padding
             next_logit_scores[ended_actions] = 0  # P(pad after end) = 1
