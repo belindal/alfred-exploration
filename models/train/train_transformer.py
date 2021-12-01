@@ -92,6 +92,10 @@ class ALFREDDataloader(DataLoader):
                         action_low = self.vocab['action_low'].index2word(action['action'])
                         #self.action_space.add(action_low)
                         action_sequence.append(action_low)
+                        if action['mask'] is not None:
+                            assert action['valid_interact'] == 1
+                        else:
+                            assert action['valid_interact'] == 0
                         curr_action_mask = self.decompress_mask(action['mask']) if action['mask'] is not None else None
                         if curr_action_mask is not None and self.action_mask_dim is None:
                             self.action_mask_dim = curr_action_mask.size()
@@ -321,9 +325,10 @@ if __name__ == '__main__':
     # initial evaluation
     best_acc = 0.0
     best_loss = float("inf")
-    """
+    # """
     model.eval()
     with torch.no_grad():
+        # eval_iter = tqdm(dl_splits['valid_seen'], desc='valid (seen)')
         eval_iter = tqdm(dl_splits['valid_seen'], desc='valid (seen)')
         best_acc = 0.0
         best_loss = 0.0
@@ -332,25 +337,28 @@ if __name__ == '__main__':
             # 'input_goals', 'state_seq', 'action_seq', 'action_mask_seq'
             #TODO
             # 'input_goals', 'state_seq', 'action_seq', 'action_mask_seq'
-            loss = model.train_forward(
+            all_outputs = model.train_forward(
                 goal_representation=feat['input_goals']['input_ids'],
                 action_sequence=feat['action_seq_w_curr']['input_ids'],
                 image_sequence=feat['state_seq_w_curr'],
                 i_mask=feat['input_goals']['attention_mask'],
                 o_mask=feat['action_seq_w_curr']['attention_mask'],
-            ).loss
-            outputs = model.test_generate(
+            )
+            loss = all_outputs.loss
+            outputs, _ = model.test_generate(
                 goal_representation=feat['input_goals']['input_ids'],
-                action_sequence=feat['action_seq_past']['input_ids'],
-                image_sequence=feat['state_seq_past'],
+                action_sequence=feat['action_seq_w_curr']['input_ids'],
+                image_sequence=feat['state_seq_w_curr'],
+                i_mask=feat['input_goals']['attention_mask'],
+                o_mask=feat['action_seq_w_curr']['attention_mask'],
             )
             acc = dl_splits['valid_seen'].compute_metrics(outputs, feat)['accuracy']
-            eval_iter.set_description(f"valid (seen) loss: {loss} // accuracy: {acc}")
             best_acc += acc
             best_loss += loss
             n_batches += 1
-        best_acc = acc / n_batches if n_batches > 0 else 0
-        best_loss = loss / n_batches if n_batches > 0 else 0
+            eval_iter.set_description(f"valid (seen) loss: {best_loss / n_batches} // accuracy: {best_acc / n_batches}")
+        best_acc = best_acc / n_batches if n_batches > 0 else 0
+        best_loss = best_loss / n_batches if n_batches > 0 else 0
         print(f"Initial valid (seen) loss: {best_loss} // accuracy: {best_acc}")
     # """
 
@@ -401,7 +409,7 @@ if __name__ == '__main__':
                     i_mask=feat['input_goals']['attention_mask'],
                     o_mask=feat['action_seq_w_curr']['attention_mask'],
                 ).loss
-                outputs = model.test_generate(
+                outputs, _ = model.test_generate(
                     goal_representation=feat['input_goals']['input_ids'],
                     action_sequence=feat['action_seq_past']['input_ids'],
                     image_sequence=feat['state_seq_past'],

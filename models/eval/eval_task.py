@@ -5,9 +5,11 @@ import numpy as np
 import torch
 from PIL import Image
 from datetime import datetime
-from eval import Eval
+from models.eval.eval import Eval
 from env.thor_env import ThorEnv
 from scripts.generate_maskrcnn import MaskRCNNDetector, CustomImageLoader
+from models.model.t5 import vis_encoder
+from models.utils.debug_utils import plot_mask
 
 class EvalTask(Eval):
     '''
@@ -48,6 +50,8 @@ class EvalTask(Eval):
     def evaluate(cls, env, model, r_idx, resnet, image_loader, region_detector, traj_data, args, lock, successes, failures, results):
         # reset model
         #model.reset()
+        if vars(args)["gpu"]:
+            model = model.to('cuda')
 
         # setup scene
         reward_type = 'dense'
@@ -70,22 +74,34 @@ class EvalTask(Eval):
 
             # extract visual features
             curr_image = Image.fromarray(np.uint8(env.last_event.frame))
-            feat['all_states'] = resnet.featurize([curr_image], batch=1).unsqueeze(0)
+            feat['all_states'] = resnet.featurize([curr_image], batch=1)
+            feat['all_states'] = vis_encoder(feat['all_states'].cpu()).unsqueeze(0)
 
 
             # TODO: stop hardcoding cuda u clown
             object_features = cls.get_visual_features(env, image_loader, region_detector, args, torch.device("cuda"))
 
             # forward model
-            # little confused what actions should look like at t=0
             print("t: ", t)
-            print("pad token id: ", model.tokenizer.pad_token_id)
-            m_out = model.test_generate(feat["goal_representation"], model.tokenizer.pad_token_id*torch.ones(2, 7, 7, 1, dtype=torch.int).to('cuda'), feat["all_states"])
-            #print(m_out.logits.shape)
-            m_pred = model.tokenizer.decode(m_out[0], skip_special_tokens=True).split(' ')[0]
+            if vars(args)["gpu"]:
+                m_out = model.test_generate(
+                    feat["goal_representation"]["input_ids"],
+                    torch.zeros((1, 2), dtype=torch.int).to("cuda"),
+                    feat["all_states"].to("cuda"),
+                    i_mask=feat["goal_representation"]["attention_mask"],
+                    o_mask=torch.ones((1, 2), dtype=torch.int).to("cuda"),
+                )
+            else:
+                m_out = model.test_generate(
+                    feat["goal_representation"]["input_ids"],
+                    torch.zeros((1, 2), dtype=torch.int).to("cpu"),
+                    feat["all_states"].to("cpu"),
+                    i_mask=feat["goal_representation"]["attention_mask"],
+                    o_mask=torch.ones((1, 2), dtype=torch.int).to("cpu"),
+                )
+            breakpoint()
+            m_pred = model.decode_prediction(m_out, curr_image)
             print(m_pred)
-            #m_pred = model.extract_preds(m_out, [traj_data], feat, clean_special_tokens=False)
-            m_pred = list(m_pred.values())[0]
 
             # check if <<stop>> was predicted
             if m_pred['action_low'] == cls.STOP_TOKEN:
@@ -93,15 +109,19 @@ class EvalTask(Eval):
                 break
 
             # get action and mask
-            action, mask = m_pred['action_low'], m_pred['action_low_mask'][0]
-            mask = np.squeeze(mask, axis=0) if model.has_interaction(action) else None
+            action, mask = m_pred['action_low'], m_pred['action_low_mask']
+            mask = mask if model.has_interaction(action) else None
+
+            # NOTE: Sahit I added this debug util to plot_mask(), I hope it can be helpful with the CNN model
+            if args.debug:
+                plot_mask(mask, 'mask.png')
 
             # print action
             if args.debug:
                 print(action)
-
             # use predicted action and mask (if available) to interact with the env
             t_success, _, _, err, _ = env.va_interact(action, interact_mask=mask, smooth_nav=args.smooth_nav, debug=args.debug)
+            breakpoint()
             if not t_success:
                 fails += 1
                 if fails >= args.max_fails:
