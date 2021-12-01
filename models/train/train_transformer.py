@@ -25,6 +25,7 @@ from models.model.t5 import GoalConditionedTransformer
 from tqdm import tqdm
 import itertools as it
 import random
+import regex as re
 random.seed(0)
 
 
@@ -107,10 +108,10 @@ class ALFREDDataloader(DataLoader):
                             action_args = self.process_action_args(api_action)
                             action_args_sequence.append(action_args)
                             if 'object' in action_args:
-                                action_nl += " "+action['object']
-                            if 'receptacle' in action_args_sequence:
-                                action_nl += " in "+action['receptacle']
-                        action_sequence.append(action_nl)
+                                action_nl += ": " + action_args['object'].strip()
+                            if 'receptacle' in action_args:
+                                action_nl += " in " + action_args['receptacle']
+                        action_sequence.append(self.unCamelSnakeCase(action_nl).replace('  ', ' '))
                         if action['mask'] is not None:
                             assert action['valid_interact'] == 1
                         else:
@@ -139,6 +140,14 @@ class ALFREDDataloader(DataLoader):
             for task in tqdm(dataset):
                 new_dataset.append(self.load_task_json(task, args.data, args.pp_folder))
         super().__init__(new_dataset, batch_size, collate_fn=self.collate_fn)
+    
+    def unCamelSnakeCase(self, action_str):
+        """
+        for all actions and all objects uncamel case and unsnake case.
+        Also remove all nubmers
+        """
+        return re.sub(r'((?=[A-Z])|(\d+)|_|  )', ' ', action_str).lower().strip()
+
 
     def process_action_args(self, api_action):
         '''
@@ -435,7 +444,7 @@ if __name__ == '__main__':
             optimizer.step()
 
             step += 1
-            if step%100 == 0:
+            if step%500 == 0:
                 torch.save(model.state_dict(), f"{save_path[:-4]}_ep{epoch}_step{step}.pth")
 
         # evaluate
