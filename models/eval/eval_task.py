@@ -72,13 +72,16 @@ class EvalTask(Eval):
             curr_image = Image.fromarray(np.uint8(env.last_event.frame))
             feat['all_states'] = resnet.featurize([curr_image], batch=1).unsqueeze(0)
 
+
+            # TODO: stop hardcoding cuda u clown
+            object_features = cls.get_visual_features(env, image_loader, region_detector, None, torch.device("cuda"))
+
             # forward model
             # little confused what actions should look like at t=0
             print("t: ", t)
             print("pad token id: ", model.tokenizer.pad_token_id)
             m_out = model.test_generate(feat["goal_representation"], model.tokenizer.pad_token_id*torch.ones(2, 7, 7, 1, dtype=torch.int).to('cuda'), feat["all_states"])
             #print(m_out.logits.shape)
-            breakpoint()
             m_pred = model.tokenizer.decode(m_out[0], skip_special_tokens=True).split(' ')[0]
             print(m_pred)
             #m_pred = model.extract_preds(m_out, [traj_data], feat, clean_special_tokens=False)
