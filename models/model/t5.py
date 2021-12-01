@@ -102,7 +102,7 @@ class GoalConditionedTransformer(nn.Module):
         fused_action_image_rep = self.fusion_module(torch.cat([embedded_action_sequence, image_sequence], dim=-1))
         return action_sequence, action_sequence_mask, image_sequence, fused_action_image_rep
 
-    def test_generate(self, goal_representation, action_seq_past, image_seq_w_curr, i_mask=None, o_mask=None):
+    def test_generate(self, goal_representation, action_seq_past, image_seq_w_curr, i_mask=None, o_mask=None, topk=1):
         """
         goal_representation: (bs, # tokens in goal)
         action_seq_past: (bs, tok_len of action sequence history)
@@ -129,13 +129,18 @@ class GoalConditionedTransformer(nn.Module):
             for idx in range(bs)
         ])
         ended_actions = torch.zeros(bs).bool().to(self.device)
-        for _ in range(15):
+        for unroll_idx in range(15):
             model_output = self.model(
                 input_ids=goal_representation, attention_mask=i_mask,
                 decoder_inputs_embeds=fused_action_image_rep, decoder_attention_mask=action_sequence_mask,
             )
-            next_logit_scores, next_logits = model_output.logits[torch.arange(bs),last_token_pos].max(-1)
-            # breakpoint()
+            if unroll_idx == 0:
+                next_logit_score_dist, next_logits_dist = model_output.logits[torch.arange(bs),last_token_pos].topk(topk, dim=-1)
+                scores_dist = torch.distributions.Categorical(logits = next_logit_score_dist)
+                sampled_action_idx = scores_dist.sample()
+                next_logit_scores, next_logits = next_logit_score_dist[torch.arange(bs), sampled_action_idx], next_logits_dist[torch.arange(bs),sampled_action_idx]
+            else:
+                next_logit_scores, next_logits = model_output.logits[torch.arange(bs),last_token_pos].max(-1)
             next_image = image_sequence[torch.arange(bs),last_token_pos]  # repeat current state
             # if the action has ended, next token must be padding
             next_logit_scores[ended_actions] = 0  # P(pad after end) = 1
@@ -203,7 +208,7 @@ class GoalConditionedTransformer(nn.Module):
     def load(cls, args, fsave):
         model = cls(args=args)
         if args.gpu:
-            model.load_state_dict(torch.load(fsave)) 
+            model.load_state_dict(torch.load(fsave))
         else:
             model.load_state_dict(torch.load(fsave, map_location=torch.device('cpu')))
         return model
@@ -240,13 +245,13 @@ class GoalConditionedTransformer(nn.Module):
             'attention_mask': torch.Tensor(len(batch),0).long().to(self.device),
         }
         return feat
-    
+
     @classmethod
     def generate_naive_action_mask(cls, _action, _curr_image, _curr_image_features):
         m = np.zeros((300, 300))
         m[140:160, 140:160] = 1
         return m
-    
+
     @classmethod
     def generate_action_mask(cls, action, curr_image, image_obj_features):
         m = np.zeros((300, 300))
@@ -255,11 +260,14 @@ class GoalConditionedTransformer(nn.Module):
         object_names = object_names.split(' in ')
         if len(object_names) == 0: return None
         # ["table", "chair"]
-        breakpoint()
         obj_label2feature_idx = {CLASSES[label]: i for i, label in enumerate(image_obj_features["class_labels"])}
         obj_masks = []
         for obj_name in object_names:
-            obj_idx = obj_label2feature_idx[snake_to_camel(obj_name)]
+            try:
+                obj_idx = obj_label2feature_idx[snake_to_camel(obj_name)]
+            except Exception as e:
+                print("trying to interact with an object not in the scene")
+                breakpoint()
             obj_masks.append(image_obj_features['masks'][obj_idx][0])
         return m
 
