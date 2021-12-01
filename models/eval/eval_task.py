@@ -15,7 +15,7 @@ class EvalTask(Eval):
     '''
 
     @classmethod
-    def run(cls, model, resnet, task_queue, args, lock, successes, failures, results):
+    def run(cls, model, resnet, image_loader, region_detector, task_queue, args, lock, successes, failures, results):
         '''
         evaluation loop
         '''
@@ -33,7 +33,7 @@ class EvalTask(Eval):
                 r_idx = task['repeat_idx']
                 print("Evaluating: %s" % (traj['root']))
                 print("No. of trajectories left: %d" % (task_queue.qsize()))
-                cls.evaluate(env, model, r_idx, resnet, traj, args, lock, successes, failures, results)
+                cls.evaluate(env, model, r_idx, resnet, image_loader, region_detector, traj, args, lock, successes, failures, results)
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -45,7 +45,7 @@ class EvalTask(Eval):
 
 
     @classmethod
-    def evaluate(cls, env, model, r_idx, resnet, traj_data, args, lock, successes, failures, results):
+    def evaluate(cls, env, model, r_idx, resnet, image_loader, region_detector, traj_data, args, lock, successes, failures, results):
         # reset model
         #model.reset()
 
@@ -74,7 +74,7 @@ class EvalTask(Eval):
 
 
             # TODO: stop hardcoding cuda u clown
-            object_features = cls.get_visual_features(env, image_loader, region_detector, None, torch.device("cuda"))
+            object_features = cls.get_visual_features(env, image_loader, region_detector, args, torch.device("cuda"))
 
             # forward model
             # little confused what actions should look like at t=0

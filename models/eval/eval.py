@@ -1,3 +1,4 @@
+import numpy as np
 import json
 import pprint
 import random
@@ -8,6 +9,8 @@ from models.nn.resnet import Resnet
 from data.preprocess import Dataset
 from importlib import import_module
 from scripts.generate_maskrcnn import create_panorama, MaskRCNNDetector
+from scripts.generate_maskrcnn import CustomImageLoader
+from scripts.geometry_utils import calculate_angles
 
 class Eval(object):
 
@@ -22,6 +25,8 @@ class Eval(object):
         self.manager = manager
         self.region_detector = MaskRCNNDetector(
                 checkpoint_path="storage/models/vision/moca_maskrcnn/weight_maskrcnn.pt")
+        self.region_detector.eval()
+        self.image_loader = CustomImageLoader(min_size = self.args.frame_size, max_size=self.args.frame_size)
 
         # load splits
         with open(self.args.splits) as f:
@@ -56,6 +61,7 @@ class Eval(object):
         # gpu
         if self.args.gpu:
             self.model = self.model.to(torch.device('cuda'))
+            self.region_detector = self.region_detector.to(torch.device("cuda"))
 
         # success and failure lists
         self.create_stats()
@@ -88,7 +94,7 @@ class Eval(object):
         # start threads
         threads = []
         lock = self.manager.Lock()
-        self.run(self.model, self.resnet, task_queue, self.args, lock,
+        self.run(self.model, self.resnet, self.image_loader, self.region_detector, task_queue, self.args, lock,
                                                    self.successes, self.failures, self.results)
         """
         for n in range(self.args.num_threads):
@@ -145,13 +151,13 @@ class Eval(object):
     def get_visual_features(cls, env, image_loader, region_detector, args,
                             cuda_device):
         # collect current robot view
-        panorama_images, camera_infos = create_panorama(env, args.rotation_steps - 1)
+        panorama_images, camera_infos = create_panorama(env, 0)
 
         images, sizes = image_loader(panorama_images, pack=True)
 
         # FasterRCNN feature extraction for the current frame
-        if cuda_device >= 0:
-            images = images.to(cuda_device)
+        #if cuda_device >= 0:
+        images = images.to(cuda_device)
 
         detector_results = region_detector(images)
 
@@ -201,3 +207,5 @@ class Eval(object):
             ))
 
         return object_features
+
+
