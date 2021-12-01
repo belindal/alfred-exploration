@@ -92,6 +92,7 @@ class ALFREDDataloader(DataLoader):
                     # subgoal_actions = self.vocab['action_high'].index2word(ex['num']['action_high'][subgoal_idx]['action'])
                     for action_idx, action in enumerate(ex['num']['action_low'][subgoal_idx]):
                         action_low = self.vocab['action_low'].index2word(action['action'])
+                        action_nl = action_low
                         if action_low == '<<stop>>':
                             # special case where api_actions_by_subgoal[subgoal_idx] will be empty
                             action_args_sequence.append({})
@@ -103,8 +104,13 @@ class ALFREDDataloader(DataLoader):
                             assert (
                                 api_action["action"] == action_low
                             ), "Action must match to action_low otherwise our action_args sequence is all screwy"
-                            action_args_sequence.append(self.process_action_args(api_action))
-                        action_sequence.append(action_low)
+                            action_args = self.process_action_args(api_action)
+                            action_args_sequence.append(action_args)
+                            if 'object' in action_args:
+                                action_nl += " "+action['object']
+                            if 'receptacle' in action_args_sequence:
+                                action_nl += " in "+action['receptacle']
+                        action_sequence.append(action_nl)
                         if action['mask'] is not None:
                             assert action['valid_interact'] == 1
                         else:
