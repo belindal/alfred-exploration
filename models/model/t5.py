@@ -7,10 +7,12 @@ from transformers import AutoConfig, AutoModelForSeq2SeqLM, T5ForConditionalGene
 import torch.nn.functional as F
 from models.nn.vnn import ResnetVisualEncoder
 import regex as re
+import gen
 
 vis_encoder = ResnetVisualEncoder(dframe=512)
 API_ACTIONS = ["PickupObject", "ToggleObject", "LookDown_15", "MoveAhead_25", "RotateLeft_90", "LookUp_15", "RotateRight_90", "ToggleObjectOn", "ToggleObjectOff", "PutObject", "SliceObject", "OpenObject", "CloseObject"]
-
+CLASSES = ['0'] + gen.constants.OBJECTS + ['AppleSliced', 'ShowerCurtain', 'TomatoSliced', 'LettuceSliced', 'Lamp',
+                                        'ShowerHead', 'EggCracked', 'BreadSliced', 'PotatoSliced', 'Faucet']
 
 class GoalConditionedTransformer(nn.Module):
     def __init__(self, concat_dim=1024, hidden_dim=512,random_init=0, args=None):
@@ -209,13 +211,13 @@ class GoalConditionedTransformer(nn.Module):
         object_names = action.split(':')[-1].strip()
         object_names = object_names.split(' in ')
         if len(object_names) == 0: return None
+        # ["table", "chair"]
         breakpoint()
-        for feature in image_obj_features:
-            for i, label in enumerate(feature["class_labels"]):
-                if feature["class_probs"][i] > 0.8:
-                    print(label)
-                    print(classes[label])
-                feature['masks'][0][0]
+        obj_label2feature_idx = {CLASSES[label]: i for i, label in enumerate(image_obj_features["class_labels"])}
+        obj_masks = []
+        for obj_name in object_names:
+            obj_idx = obj_label2feature_idx[self.snake_to_camel(obj_name)]
+            obj_masks.append(image_obj_features['masks'][obj_idx][0])
         return m
 
     def snake_to_camel(self, action_str):
@@ -237,7 +239,7 @@ class GoalConditionedTransformer(nn.Module):
     def decode_prediction(self, m_out, curr_image, object_features):
         # TODO: Maybe cast all actions to be within the 13 valid tokens.
         # Also this is a good place to add in the exploration
-        action = self.tokenizer.decode(m_out[0], skip_special_tokens=True).split(",")[0].strip()
+        action = self.tokenizer.decode(m_out, skip_special_tokens=True).split(",")[0].strip()
         # convert BACK to API action!!!
         api_action = self.snake_to_camel(action.split(':')[0].strip())
         assert api_action in API_ACTIONS

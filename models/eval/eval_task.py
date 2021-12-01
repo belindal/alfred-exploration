@@ -71,8 +71,6 @@ class EvalTask(Eval):
         fails = 0
         t = 0
         reward = 0
-        classes = ['0'] + gen.constants.OBJECTS + ['AppleSliced', 'ShowerCurtain', 'TomatoSliced', 'LettuceSliced', 'Lamp',
-                                                'ShowerHead', 'EggCracked', 'BreadSliced', 'PotatoSliced', 'Faucet']
 
         state_history = torch.tensor([])
         while not done:
@@ -120,7 +118,7 @@ class EvalTask(Eval):
             feat['actions']['input_ids'] = m_out['action_seq']
             feat['actions']['attention_mask'] = m_out['action_seq_mask']
             state_history = m_out['states_seq']
-            m_pred = model.decode_prediction(m_out['actions'], curr_image, object_features)
+            m_pred = model.decode_prediction(m_out['actions'][0], curr_image, object_features[0])
             print(m_pred)
 
             # check if <<stop>> was predicted
