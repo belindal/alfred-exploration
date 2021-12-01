@@ -43,7 +43,7 @@ The main files that I added for the Transformer training are `models/train/train
 
 ## Evaluating the Transformer
 ```bash
-python3 models/eval/eval_seq2seq.py --model_path models/pretrained/transformer.pth --eval_split valid_seen --data data/json_feat_2.1.0 --model models.model.t5 --gpu --num_threads 1
+python3 models/eval/eval_seq2seq.py --model_path /home/sahit/alfred-exploration/models/pretrained/transformer_ep0_step14000.pth --eval_split valid_seen --data /home/sahit/alfred-exploration/data/json_feat_2.1.0 --model models.model.t5 --gpu --num_threads 1
 ```
 
 - When this starts working for real, increase num_threads from 1 to e.g 3

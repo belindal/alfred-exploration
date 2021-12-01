@@ -71,8 +71,6 @@ class EvalTask(Eval):
         fails = 0
         t = 0
         reward = 0
-        classes = ['0'] + gen.constants.OBJECTS + ['AppleSliced', 'ShowerCurtain', 'TomatoSliced', 'LettuceSliced', 'Lamp',
-                                                'ShowerHead', 'EggCracked', 'BreadSliced', 'PotatoSliced', 'Faucet']
 
         state_history = torch.tensor([])
         while not done:
@@ -84,21 +82,20 @@ class EvalTask(Eval):
             curr_image = Image.fromarray(np.uint8(env.last_event.frame))
             curr_state = resnet.featurize([curr_image], batch=1)
             curr_state = vis_encoder(curr_state.cpu()).unsqueeze(0)
-            breakpoint()
-            feat['all_states'] = torch.cat([curr_state, state_history.cpu()], dim=1)
+            feat['all_states'] = torch.cat([state_history.cpu(), curr_state], dim=1)
 
             object_features = cls.get_visual_features(env, image_loader, region_detector, args, device)
             # maybe the first dim of object_features corresponds to batch size? idk
             # object_features[0]["masks"] : (num_objects, 1, 300, 300)
             # object_features[0]["class_probs"]: (num_objects)
             # object_features[0]["class_labels"]: (num_objects)
-            for feature in object_features:
-                for i, label in enumerate(feature["class_labels"]):
-                    if feature["class_probs"][i] > 0.8:
-                        print(label)
-                        print(classes[label])
-                #plt.imshow(feature["masks"][0][0])
-                #plt.show()
+            # for feature in object_features:
+            #     for i, label in enumerate(feature["class_labels"]):
+            #         if feature["class_probs"][i] > 0.8:
+            #             print(label)
+            #             print(classes[label])
+            #     #plt.imshow(feature["masks"][0][0])
+            #     #plt.show()
 
             # forward model
             print("t: ", t)
@@ -118,10 +115,10 @@ class EvalTask(Eval):
                     i_mask=feat["goal_representation"]["attention_mask"].to("cpu"),
                     o_mask=feat['actions']['attention_mask'].to("cpu"),
                 )
-            feat['actions']['input_ids'] = m_out['actions']
-            feat['actions']['attention_mask'] = m_out['mask']
-            state_history = m_out['states']
-            m_pred = model.decode_prediction(m_out['actions'], curr_image)
+            feat['actions']['input_ids'] = m_out['action_seq']
+            feat['actions']['attention_mask'] = m_out['action_seq_mask']
+            state_history = m_out['states_seq']
+            m_pred = model.decode_prediction(m_out['actions'][0], curr_image, object_features[0])
             print(m_pred)
 
             # check if <<stop>> was predicted

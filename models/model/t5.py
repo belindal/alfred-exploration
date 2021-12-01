@@ -6,8 +6,13 @@ from torch import nn
 from transformers import AutoConfig, AutoModelForSeq2SeqLM, T5ForConditionalGeneration, T5Tokenizer
 import torch.nn.functional as F
 from models.nn.vnn import ResnetVisualEncoder
+import regex as re
+import gen
 
 vis_encoder = ResnetVisualEncoder(dframe=512)
+API_ACTIONS = ["PickupObject", "ToggleObject", "LookDown_15", "MoveAhead_25", "RotateLeft_90", "LookUp_15", "RotateRight_90", "ToggleObjectOn", "ToggleObjectOff", "PutObject", "SliceObject", "OpenObject", "CloseObject"]
+CLASSES = ['0'] + gen.constants.OBJECTS + ['AppleSliced', 'ShowerCurtain', 'TomatoSliced', 'LettuceSliced', 'Lamp',
+                                        'ShowerHead', 'EggCracked', 'BreadSliced', 'PotatoSliced', 'Faucet']
 
 class GoalConditionedTransformer(nn.Module):
     def __init__(self, concat_dim=1024, hidden_dim=512,random_init=0, args=None):
@@ -22,6 +27,7 @@ class GoalConditionedTransformer(nn.Module):
         self.concat_dim = concat_dim
         self.hidden_dim = hidden_dim
         self.fusion_module = nn.Linear(self.concat_dim, self.hidden_dim)
+        self.device = torch.device('cuda') if self.args.gpu else torch.device('cpu')
 
     def setup_inputs(self, goal_representation, action_sequence, image_sequence,i_mask,o_mask):
         # encode goal with T5 encoder
@@ -51,11 +57,6 @@ class GoalConditionedTransformer(nn.Module):
         transformer_inputs = self.setup_inputs(goal_representation, action_sequence, image_sequence,i_mask,o_mask)
         model_outs = self.model(**transformer_inputs)
         return model_outs
-    
-    def make_generate_inputs(self, action_sequence, image_sequence):
-        breakpoint()
-        return action_sequence, image_sequence
-
 
     def test_generate(self, goal_representation, action_seq_past, image_seq_w_curr, i_mask=None, o_mask=None):
         """
@@ -90,9 +91,9 @@ class GoalConditionedTransformer(nn.Module):
         action_sequence_mask = F.pad(input=o_mask, pad=(1,0,0,0), value=1)
         image_sequence = image_seq_w_curr[:,:action_seq_past.size(1)+1,:].clone()
         assert image_sequence.size()[:2] == action_sequence.size()
-        # sanity check
-        if image_sequence.size(1) > 1:
-            assert not (image_sequence[:,-1,:] == image_sequence[:,-2,:]).all()
+        # # sanity check
+        # if image_sequence.size(1) > 1:
+        #     assert not (image_sequence[:,-1,:] == image_sequence[:,-2,:]).all()
         embedded_action_sequence = self.model.decoder.embed_tokens(action_sequence)
         # (bs, n_tokens_in_history + 1, linear_out_dim)
         fused_action_image_rep = self.fusion_module(torch.cat([embedded_action_sequence, image_sequence], dim=-1))
@@ -103,51 +104,57 @@ class GoalConditionedTransformer(nn.Module):
         # greedy search
         # pad all tok_len dimensions by 10
         # last token = first `0` token of mask
-        action_sequence = F.pad(action_sequence, pad=(0,10,0,0), value=self.tokenizer.pad_token_id)
-        image_sequence = F.pad(image_sequence, pad=(0,0,0,10,0,0), value=0)
-        fused_action_image_rep = F.pad(fused_action_image_rep, pad=(0,0,0,10,0,0), value=0)
-        action_sequence_mask = F.pad(action_sequence_mask, pad=(0,10,0,0), value=0)
+        action_sequence = F.pad(action_sequence, pad=(0,15,0,0), value=self.tokenizer.pad_token_id)
+        image_sequence = F.pad(image_sequence, pad=(0,0,0,15,0,0), value=0)
+        fused_action_image_rep = F.pad(fused_action_image_rep, pad=(0,0,0,15,0,0), value=0)
+        action_sequence_mask = F.pad(action_sequence_mask, pad=(0,15,0,0), value=0)
         last_token_pos = torch.stack([
             (action_sequence[idx] == 6).nonzero().max()
-            if (action_sequence[idx] == 6).any() else torch.tensor(0).to(action_sequence[idx].device)
+            if (action_sequence[idx] == 6).any() else torch.tensor(0).to(self.device)
             for idx in range(bs)
         ])
-        for _ in range(10):
-            model_output = self.model(input_ids=goal_representation, attention_mask=i_mask, decoder_inputs_embeds=fused_action_image_rep, decoder_attention_mask=action_sequence_mask)
+        ended_actions = torch.zeros(bs).bool().to(self.device)
+        for _ in range(15):
+            model_output = self.model(
+                input_ids=goal_representation, attention_mask=i_mask,
+                decoder_inputs_embeds=fused_action_image_rep, decoder_attention_mask=action_sequence_mask,
+            )
             next_logit_scores, next_logits = model_output.logits[torch.arange(bs),last_token_pos].max(-1)
+            next_image = image_sequence[torch.arange(bs),last_token_pos]  # repeat current state
+            # if the action has ended, next token must be padding
+            next_logit_scores[ended_actions] = 0  # P(pad after end) = 1
+            next_logits[ended_actions] = self.tokenizer.pad_token_id
+            next_image[ended_actions] = 0
             # [(bs) x n_gen_tokens]
             scores.append(next_logit_scores)
             next_actions.append(next_logits)
-            """
-            # break on whitespace -- next action
-            all_actions_generated_whitespace = True
-            for logit in next_logits: all_actions_generated_whitespace &= self.tokenizer.decode(logit).startswith(' ')
-            if all_actions_generated_whitespace: break
-            """
-            # add token to sequence
+            # sequence has expanded
             last_token_pos += 1
             # (bs, n_tokens+1)
             action_sequence[torch.arange(bs),last_token_pos] = next_logits
             embedded_action_sequence = self.model.decoder.embed_tokens(action_sequence)
             # (bs, n_tokens+1, image_dim)
-            image_sequence[torch.arange(bs),last_token_pos] = image_sequence[torch.arange(bs),last_token_pos-1]  # repeat current state (across token)
+            image_sequence[torch.arange(bs),last_token_pos] = next_image
             fused_action_image_rep = self.fusion_module(torch.cat([embedded_action_sequence, image_sequence], dim=-1))
             # (bs, n_tokens+1)
             action_sequence_mask[torch.arange(bs),last_token_pos] = 1
-        # # add EOS token and prune padding
-        # # (bs, n_tokens+1)
-        # action_sequence[..., :-1] = action_sequence[..., 1:].clone()
-        # action_sequence[..., last_token_pos] = self.tokenizer.eos_token_id
-        # # (bs, n_tokens, image_dim) -- remove image at position corresponding to eos_token_id
-        # image_sequence = image_sequence[:, :last_token_pos, :]
-        # o_mask_token_n_item = o_mask.sum(0)
-        # action_sequence = action_sequence[:, o_mask_token_n_item > 0]
-        # o_mask = o_mask[:, o_mask_token_n_item > 0]
+            # """
+            # break on comma -- next action
+            ended_actions |= next_logits == self.tokenizer.convert_tokens_to_ids(',')
+            if ended_actions.all(): break
+            # """
+        if ended_actions.all():
+            # remove extra padding and bos token id
+            # (bs, n_tokens)
+            action_sequence = action_sequence[:,1:last_token_pos.max()+1]
+            action_sequence_mask = action_sequence_mask[:,1:last_token_pos.max()+1]
+            # (bs, n_tokens, image_dim)
+            image_sequence = image_sequence[:,1:last_token_pos.max()+1,:]
         # bs x n_gen_tokens
         next_actions = torch.stack(next_actions, dim=1)
         # bs x n_gen_tokens -> bs
         scores = -torch.stack(scores, dim=1).sum(-1)
-        return {'actions': next_actions, 'full_actions': action_sequence, 'mask': action_sequence_mask, 'states': image_sequence, 'log_probs': scores}
+        return {'actions': next_actions, 'action_seq': action_sequence, 'action_seq_mask': action_sequence_mask, 'states_seq': image_sequence, 'log_probs': scores}
 
     @classmethod
     def load(cls, args, fsave):
@@ -168,7 +175,6 @@ class GoalConditionedTransformer(nn.Module):
         return data
 
     def featurize(self, batch):
-        device = torch.device('cuda') if self.args.gpu else torch.device('cpu')
         feat = {
             # 'all_states': [],
             # 'actions': [],
@@ -185,27 +191,65 @@ class GoalConditionedTransformer(nn.Module):
                 feat['goal_representation'][-1] += (
                     ''.join([i.rstrip() for i in instr])
                 ).replace('<<goal>>', ' [goal]').replace('<<stop>>', ' [stop]').replace('  ', ' ').strip()
-        feat['goal_representation'] = self.tokenizer(feat['goal_representation'], return_tensors='pt', padding=True).to(device)
-        feat['actions'] = self.tokenizer(["" for item in batch], return_tensors='pt', padding=True).to(device)
+        feat['goal_representation'] = self.tokenizer(feat['goal_representation'], return_tensors='pt', padding=True).to(self.device)
+        feat['actions'] = {
+            'input_ids': torch.Tensor(len(batch),0).long().to(self.device),
+            'attention_mask': torch.Tensor(len(batch),0).long().to(self.device),
+        }
         return feat
     
     @classmethod
-    def generate_naive_action_mask(cls, _action, _curr_image):
+    def generate_naive_action_mask(cls, _action, _curr_image, _curr_image_features):
         m = np.zeros((300, 300))
         m[140:160, 140:160] = 1
         return m
+    
+    @classmethod
+    def generate_action_mask(cls, action, curr_image, image_obj_features):
+        m = np.zeros((300, 300))
+        # extract object(s) from action
+        object_names = action.split(':')[-1].strip()
+        object_names = object_names.split(' in ')
+        if len(object_names) == 0: return None
+        # ["table", "chair"]
+        breakpoint()
+        obj_label2feature_idx = {CLASSES[label]: i for i, label in enumerate(image_obj_features["class_labels"])}
+        obj_masks = []
+        for obj_name in object_names:
+            obj_idx = obj_label2feature_idx[self.snake_to_camel(obj_name)]
+            obj_masks.append(image_obj_features['masks'][obj_idx][0])
+        return m
 
-    def decode_prediction(self, m_out, curr_image):
+    def snake_to_camel(self, action_str):
+        """
+        for all actions and all objects unsnake case and camel case.
+        re-add numbers
+        """
+        def camel(match):
+            return match.group(1)[0].upper() + match.group(1)[1:] + match.group(2).upper()
+        action_str = re.sub(r'(.*?) ([a-zA-Z])', camel, action_str)
+        if action_str.startswith("Look"):  # LookDown_15, LookUp_15
+            action_str += "_15"
+        if action_str.startswith("Rotate"):  # RotateRight_90, RotateLeft_90
+            action_str += "_90"
+        if action_str.startswith("Move"):  # MoveAhead_25
+            action_str += "_25"
+        return action_str
+
+    def decode_prediction(self, m_out, curr_image, object_features):
         # TODO: Maybe cast all actions to be within the 13 valid tokens.
         # Also this is a good place to add in the exploration
-        action = self.tokenizer.decode(m_out[0], skip_special_tokens=True).split(",")[0].strip()
+        action = self.tokenizer.decode(m_out, skip_special_tokens=True).split(",")[0].strip()
+        # convert BACK to API action!!!
+        api_action = self.snake_to_camel(action.split(':')[0].strip())
+        assert api_action in API_ACTIONS
         mask = (
-            self.generate_naive_action_mask(action, curr_image)
+            self.generate_action_mask(action, curr_image, object_features)
             if self.has_interaction(action)
             else None
         )
         return {
-            "action_low": action,
+            "action_low": api_action,
             "action_low_mask": mask,
         }
 
@@ -214,15 +258,16 @@ class GoalConditionedTransformer(nn.Module):
         """
         check if low-level action is interactive
         """
-        non_interact_actions = [
-            "MoveAhead",
-            "Rotate",
-            "Look",
-            "[stop]",
-            "<<pad>>",
-            "<<seg>>",
-        ]
-        if any(a in action for a in non_interact_actions):
-            return False
-        else:
-            return True
+        return ':' in action
+        # non_interact_actions = [
+        #     "MoveAhead",
+        #     "Rotate",
+        #     "Look",
+        #     "[stop]",
+        #     "<<pad>>",
+        #     "<<seg>>",
+        # ]
+        # if any(a in action for a in non_interact_actions):
+        #     return False
+        # else:
+        #     return True
