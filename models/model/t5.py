@@ -6,8 +6,11 @@ from torch import nn
 from transformers import AutoConfig, AutoModelForSeq2SeqLM, T5ForConditionalGeneration, T5Tokenizer
 import torch.nn.functional as F
 from models.nn.vnn import ResnetVisualEncoder
+import regex as re
 
 vis_encoder = ResnetVisualEncoder(dframe=512)
+API_ACTIONS = ["PickupObject", "ToggleObject", "LookDown_15", "MoveAhead_25", "RotateLeft_90", "LookUp_15", "RotateRight_90", "ToggleObjectOn", "ToggleObjectOff", "PutObject", "SliceObject", "OpenObject", "CloseObject"]
+
 
 class GoalConditionedTransformer(nn.Module):
     def __init__(self, concat_dim=1024, hidden_dim=512,random_init=0, args=None):
@@ -205,6 +208,7 @@ class GoalConditionedTransformer(nn.Module):
         # extract object(s) from action
         object_names = action.split(':')[-1].strip()
         object_names = object_names.split(' in ')
+        if len(object_names) == 0: return None
         breakpoint()
         for feature in image_obj_features:
             for i, label in enumerate(feature["class_labels"]):
@@ -214,17 +218,36 @@ class GoalConditionedTransformer(nn.Module):
                 feature['masks'][0][0]
         return m
 
+    def snake_to_camel(self, action_str):
+        """
+        for all actions and all objects unsnake case and camel case.
+        re-add numbers
+        """
+        def camel(match):
+            return match.group(1)[0].upper() + match.group(1)[1:] + match.group(2).upper()
+        action_str = re.sub(r'(.*?) ([a-zA-Z])', camel, action_str)
+        if action_str.startswith("Look"):  # LookDown_15, LookUp_15
+            action_str += "_15"
+        if action_str.startswith("Rotate"):  # RotateRight_90, RotateLeft_90
+            action_str += "_90"
+        if action_str.startswith("Move"):  # MoveAhead_25
+            action_str += "_25"
+        return action_str
+
     def decode_prediction(self, m_out, curr_image, object_features):
         # TODO: Maybe cast all actions to be within the 13 valid tokens.
         # Also this is a good place to add in the exploration
         action = self.tokenizer.decode(m_out[0], skip_special_tokens=True).split(",")[0].strip()
+        # convert BACK to API action!!!
+        api_action = self.snake_to_camel(action.split(':')[0].strip())
+        assert api_action in API_ACTIONS
         mask = (
             self.generate_action_mask(action, curr_image, object_features)
             if self.has_interaction(action)
             else None
         )
         return {
-            "action_low": action,
+            "action_low": api_action,
             "action_low_mask": mask,
         }
 
@@ -233,15 +256,16 @@ class GoalConditionedTransformer(nn.Module):
         """
         check if low-level action is interactive
         """
-        non_interact_actions = [
-            "MoveAhead",
-            "Rotate",
-            "Look",
-            "[stop]",
-            "<<pad>>",
-            "<<seg>>",
-        ]
-        if any(a in action for a in non_interact_actions):
-            return False
-        else:
-            return True
+        return ':' in action
+        # non_interact_actions = [
+        #     "MoveAhead",
+        #     "Rotate",
+        #     "Look",
+        #     "[stop]",
+        #     "<<pad>>",
+        #     "<<seg>>",
+        # ]
+        # if any(a in action for a in non_interact_actions):
+        #     return False
+        # else:
+        #     return True

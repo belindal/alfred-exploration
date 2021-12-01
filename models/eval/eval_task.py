@@ -80,8 +80,6 @@ class EvalTask(Eval):
             if t >= args.max_steps:
                 break
 
-            if t > 0:
-                breakpoint()
             # extract visual features
             curr_image = Image.fromarray(np.uint8(env.last_event.frame))
             curr_state = resnet.featurize([curr_image], batch=1)
