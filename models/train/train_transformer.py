@@ -93,6 +93,9 @@ class ALFREDDataloader(DataLoader):
                     # subgoal_actions = self.vocab['action_high'].index2word(ex['num']['action_high'][subgoal_idx]['action'])
                     for action_idx, action in enumerate(ex['num']['action_low'][subgoal_idx]):
                         action_low = self.vocab['action_low'].index2word(action['action'])
+                        if "MoveAhead" in action_low:
+                            # Downsample moveahead
+                            if random.random() > 0.25: continue
                         action_nl = action_low
                         if action_low == '<<stop>>':
                             # special case where api_actions_by_subgoal[subgoal_idx] will be empty
@@ -140,6 +143,7 @@ class ALFREDDataloader(DataLoader):
             new_dataset = []
             for task in tqdm(dataset):
                 new_dataset.append(self.load_task_json(task, args.data, args.pp_folder))
+        random.shuffle(new_dataset)
         super().__init__(new_dataset, batch_size, collate_fn=self.collate_fn)
 
     def unCamelSnakeCase(self, action_str):
@@ -264,13 +268,18 @@ class ALFREDDataloader(DataLoader):
     def compute_metrics(self, preds, data):
         n_correct = 0.0
         n_total = 0
+        output_dicts = []
         for idx, pred in enumerate(preds):
             pred = self.tokenizer.decode(pred, skip_special_tokens=True)
             pred = pred.split(',')[0].strip()  # segment out first generated action
             gt = self.tokenizer.decode(data['action_curr']['input_ids'][idx], skip_special_tokens=True).strip(',')
+            output_dicts.append({
+                'pred': pred,
+                'gt': gt,
+            })
             n_correct += pred == gt
             n_total += 1
-        return {'accuracy': n_correct / n_total}
+        return {'accuracy': n_correct / n_total, 'output_dicts': output_dicts}
 
 
 if __name__ == '__main__':
@@ -385,11 +394,14 @@ if __name__ == '__main__':
     best_loss = float("inf")
     # """
     model.eval()
+    # save_predictions
+    pred_save_filename = args.save_path.split('.')[0]+'.jsonl'
     with torch.no_grad():
         eval_iter = tqdm(dl_splits['valid_seen'], desc='valid (seen)')
         best_acc = 0.0
         best_loss = 0.0
         n_batches = 0
+        json_outputs = []
         for batch, feat in eval_iter:
             # 'input_goals', 'state_seq', 'action_seq', 'action_mask_seq'
             all_outputs = model.train_forward(
@@ -407,14 +419,24 @@ if __name__ == '__main__':
                 i_mask=feat['input_goals']['attention_mask'],
                 o_mask=feat['action_seq_past']['attention_mask'],
             )['actions']
-            acc = dl_splits['valid_seen'].compute_metrics(outputs, feat)['accuracy']
+            metrics = dl_splits['valid_seen'].compute_metrics(outputs, feat)
+            acc = metrics['accuracy']
+            outputs = metrics['output_dicts']
+            for idx, output in enumerate(outputs):
+                output['inputs'] = model.tokenizer.decode(feat['input_goals']['input_ids'][idx], skip_special_tokens=True)
+                output['action_history'] = model.tokenizer.decode(feat['action_seq_past']['input_ids'][idx], skip_special_tokens=True)
             best_acc += acc
             best_loss += loss
             n_batches += 1
             eval_iter.set_description(f"valid (seen) loss: {best_loss / n_batches} // accuracy: {best_acc / n_batches}")
+            json_outputs += outputs
         best_acc = best_acc / n_batches if n_batches > 0 else 0
         best_loss = best_loss / n_batches if n_batches > 0 else 0
         print(f"Initial valid (seen) loss: {best_loss} // accuracy: {best_acc}")
+
+    with open(pred_save_filename, 'w') as wf:
+        for json_output in json_outputs:
+            wf.write(json.dumps(json_output)+"\n")
     # """
 
     # training loop
@@ -443,47 +465,82 @@ if __name__ == '__main__':
             optimizer.step()
 
             step += 1
-            if step%500 == 0:
+            if step%2000 == 0:
                 torch.save(model.state_dict(), f"{save_path[:-4]}_ep{epoch}_step{step}.pth")
+                # evaluate
+                model.eval()
+                with torch.no_grad():
+                    eval_iter = tqdm(dl_splits['valid_seen'], desc='valid (seen)')
+                    epoch_acc = 0.0
+                    epoch_loss = 0.0
+                    n_batches = 0
+                    for batch, feat in eval_iter:
+                        # 'input_goals', 'state_seq', 'action_seq', 'action_mask_seq'
+                        loss = model.train_forward(
+                            goal_representation=feat['input_goals']['input_ids'],
+                            action_sequence=feat['action_seq_w_curr']['input_ids'],
+                            image_sequence=feat['state_seq_w_curr'],
+                            i_mask=feat['input_goals']['attention_mask'],
+                            o_mask=feat['action_seq_w_curr']['attention_mask'],
+                        ).loss
+                        outputs = model.test_generate(
+                            goal_representation=feat['input_goals']['input_ids'],
+                            action_seq_past=feat['action_seq_past']['input_ids'],
+                            image_seq_w_curr=feat['state_seq_w_curr'],
+                            i_mask=feat['input_goals']['attention_mask'],
+                            o_mask=feat['action_seq_past']['attention_mask'],
+                        )['actions']
+                        metrics = dl_splits['valid_seen'].compute_metrics(outputs, feat)
+                        acc = metrics['accuracy']
+                        epoch_loss += loss
+                        epoch_acc += acc
+                        n_batches += 1
+                        eval_iter.set_description(f"valid (seen) loss: {epoch_loss / n_batches} // accuracy: {epoch_acc / n_batches}")
+                    epoch_loss = epoch_loss / n_batches if n_batches > 0 else 0
+                    epoch_acc = epoch_acc / n_batches if n_batches > 0 else 0
+                    print(f"Epoch {epoch} valid (seen) loss: {epoch_loss} // accuracy: {epoch_acc}")
+                    if epoch_acc > best_acc  or (epoch_acc == best_acc and epoch_loss < best_loss):
+                        print("Saving model")
+                        torch.save(model.state_dict(), save_path)
+                        best_loss = epoch_loss
+                        best_acc = epoch_acc
 
-        # evaluate
-        model.eval()
-        with torch.no_grad():
-            eval_iter = tqdm(dl_splits['valid_seen'], desc='valid (seen)')
-            epoch_acc = 0.0
-            epoch_loss = 0.0
-            n_batches = 0
-            for batch, feat in eval_iter:
-                # 'input_goals', 'state_seq', 'action_seq', 'action_mask_seq'
-                #TODO
-                # 'input_goals', 'state_seq', 'action_seq', 'action_mask_seq'
-                loss = model.train_forward(
-                    goal_representation=feat['input_goals']['input_ids'],
-                    action_sequence=feat['action_seq_w_curr']['input_ids'],
-                    image_sequence=feat['state_seq_w_curr'],
-                    i_mask=feat['input_goals']['attention_mask'],
-                    o_mask=feat['action_seq_w_curr']['attention_mask'],
-                ).loss
-                breakpoint()
-                outputs, _ = model.test_generate(
-                    goal_representation=feat['input_goals']['input_ids'],
-                    action_seq_past=feat['action_seq_past']['input_ids'],
-                    image_seq_w_curr=feat['state_seq_w_curr'],
-                    i_mask=feat['input_goals']['attention_mask'],
-                    o_mask=feat['action_seq_past']['attention_mask'],
-                )['actions']
-                acc = dl_splits['valid_seen'].compute_metrics(outputs, feat)['accuracy']
-                epoch_loss += loss
-                epoch_acc += acc
-                n_batches += 1
-                eval_iter.set_description(f"valid (seen) loss: {epoch_loss / n_batches} // accuracy: {epoch_acc / n_batches}")
-            epoch_loss = epoch_loss / n_batches if n_batches > 0 else 0
-            epoch_acc = epoch_acc / n_batches if n_batches > 0 else 0
-            print(f"Epoch {epoch} valid (seen) loss: {epoch_loss} // accuracy: {epoch_acc}")
-            if epoch_acc > best_acc  or (epoch_acc == best_acc and epoch_loss < best_loss):
-                print("Saving model")
-                torch.save(model.state_dict(), save_path)
-                best_loss = epoch_loss
-                best_acc = epoch_acc
-        #torch.save(model.state_dict(), f"{save_path[:-4]}_ep{epoch}.pth")
-
+        # # evaluate
+        # model.eval()
+        # with torch.no_grad():
+        #     eval_iter = tqdm(dl_splits['valid_seen'], desc='valid (seen)')
+        #     epoch_acc = 0.0
+        #     epoch_loss = 0.0
+        #     n_batches = 0
+        #     for batch, feat in eval_iter:
+        #         # 'input_goals', 'state_seq', 'action_seq', 'action_mask_seq'
+        #         #TODO
+        #         # 'input_goals', 'state_seq', 'action_seq', 'action_mask_seq'
+        #         loss = model.train_forward(
+        #             goal_representation=feat['input_goals']['input_ids'],
+        #             action_sequence=feat['action_seq_w_curr']['input_ids'],
+        #             image_sequence=feat['state_seq_w_curr'],
+        #             i_mask=feat['input_goals']['attention_mask'],
+        #             o_mask=feat['action_seq_w_curr']['attention_mask'],
+        #         ).loss
+        #         outputs, _ = model.test_generate(
+        #             goal_representation=feat['input_goals']['input_ids'],
+        #             action_seq_past=feat['action_seq_past']['input_ids'],
+        #             image_seq_w_curr=feat['state_seq_w_curr'],
+        #             i_mask=feat['input_goals']['attention_mask'],
+        #             o_mask=feat['action_seq_past']['attention_mask'],
+        #         )['actions']
+        #         acc = dl_splits['valid_seen'].compute_metrics(outputs, feat)['accuracy']
+        #         epoch_loss += loss
+        #         epoch_acc += acc
+        #         n_batches += 1
+        #         eval_iter.set_description(f"valid (seen) loss: {epoch_loss / n_batches} // accuracy: {epoch_acc / n_batches}")
+        #     epoch_loss = epoch_loss / n_batches if n_batches > 0 else 0
+        #     epoch_acc = epoch_acc / n_batches if n_batches > 0 else 0
+        #     print(f"Epoch {epoch} valid (seen) loss: {epoch_loss} // accuracy: {epoch_acc}")
+        #     if epoch_acc > best_acc  or (epoch_acc == best_acc and epoch_loss < best_loss):
+        #         print("Saving model")
+        #         torch.save(model.state_dict(), save_path)
+        #         best_loss = epoch_loss
+        #         best_acc = epoch_acc
+        # torch.save(model.state_dict(), f"{save_path[:-4]}_ep{epoch}.pth")
