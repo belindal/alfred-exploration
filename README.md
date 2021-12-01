@@ -55,3 +55,13 @@ Rough summary of changes made in this branch
 - modify test_generate in t5.py so that image_sequence_padded was the right shape 
 - add a featurize function to t5.py that takes information about the episode and connverts it into a form that can be part of the input to test_generate (this still doesn't run past t=0, so stacking the images to make a history is still a TODO)
 - modify models/eval/eval_task.py to load the GoalConditionedTransformer and pass output from the environment/task description into the model and then decode the output (the main changes happened here)
+
+## Additional required setup:
+- install allennlp
+- install pytorch-lightning
+
+- Add MaskRCNN weights:
+```bash
+mkdir -p storage/models/vision/moca_maskrcnn;
+wget https://alfred-colorswap.s3.us-east-2.amazonaws.com/weight_maskrcnn.pt -O storage/models/vision/moca_maskrcnn/weight_maskrcnn.pt; 
+```

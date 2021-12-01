@@ -37,6 +37,7 @@ class ALFREDDataloader(DataLoader):
     *_seq_w_curr: sequence of states/actions including the curr one (i.e. [a,b,c,d])
     """
     def __init__(self, args, vocab, dataset, split_type, batch_size, sep_actions: bool):
+        #self.action_space = set()
         self.vocab = vocab
         self.args = args
         # params
@@ -56,7 +57,6 @@ class ALFREDDataloader(DataLoader):
             for task in tqdm(dataset):
                 ex = self.load_task_json(task, args.data, args.pp_folder)
                 goal = [g.rstrip() for g in ex['ann']['goal']]
-
                 # load Resnet features from disk
                 root = self.get_task_root(ex)
                 im = torch.load(os.path.join(root, self.feat_pt))
@@ -87,7 +87,7 @@ class ALFREDDataloader(DataLoader):
                 all_subgoals = [[sg.rstrip() for sg in subgoal] for subgoal in ex['ann']['instr']]
                 all_subgoals_flattened = list(it.chain(*all_subgoals))
                 frame_idx = 0
-                api_actions_by_subgoal = self.get_api_actions_by_subgoals(ex, all_subgoals)             
+                api_actions_by_subgoal = self.get_api_actions_by_subgoals(ex, all_subgoals)
                 for subgoal_idx, subgoal in enumerate(all_subgoals):
                     # in terms of the action vocabulary
                     # subgoal_actions = self.vocab['action_high'].index2word(ex['num']['action_high'][subgoal_idx]['action'])
@@ -141,7 +141,7 @@ class ALFREDDataloader(DataLoader):
             for task in tqdm(dataset):
                 new_dataset.append(self.load_task_json(task, args.data, args.pp_folder))
         super().__init__(new_dataset, batch_size, collate_fn=self.collate_fn)
-    
+
     def unCamelSnakeCase(self, action_str):
         """
         for all actions and all objects uncamel case and unsnake case.
@@ -177,7 +177,7 @@ class ALFREDDataloader(DataLoader):
             api_action['action'] = la["discrete_action"]['action']
             api_actions_by_subgoal[la["high_idx"]] = api_actions_by_subgoal[
                 la["high_idx"]
-            ] + [api_action]   
+            ] + [api_action]
         return api_actions_by_subgoal
 
     def decompress_mask(self, compressed_mask):
@@ -369,6 +369,9 @@ if __name__ == '__main__':
             splits[split_type] = random.sample(splits[split_type], 50)
         dl_splits[split_type] = ALFREDDataloader(args, vocab, splits[split_type], split_type, args.batch, sep_actions)
 
+    #print("train action space: ", dl_splits["train"].action_space)
+    #print("val seen action space: ", dl_splits["valid_seen"].action_space)
+    #print("val unseen action space: ", dl_splits["valid_unseen"].action_space)
     # load model
     # model = T5ForConditionalGeneration.from_pretrained('t5-small').to('cuda')
     save_path = args.save_path

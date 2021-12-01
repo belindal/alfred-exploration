@@ -46,6 +46,14 @@ if __name__ == '__main__':
     parser.add_argument('--debug', dest='debug', action='store_true')
     parser.add_argument('--fast_epoch', dest='fast_epoch', action='store_true')
 
+    ## MaskRCNN parameters
+    parser.add_argument('--box_score_thresh', type=float, default=0.05)
+    parser.add_argument('--box_nms_thresh', type=float, default=0.5)
+    parser.add_argument('--panoramic_boxes', nargs="+", default=(36, 18, 18, 18), type=int)
+    parser.add_argument('--max_boxes_per_image', type=int, default=36)
+    parser.add_argument('--frame_size', type=int, default=300)
+    parser.add_argument('--maskrcnn_checkpoint', default="storage/models/vision/moca_maskrcnn/weight_maskrcnn.pt",
+                        type=str)
     # parse arguments
     args = parser.parse_args()
 

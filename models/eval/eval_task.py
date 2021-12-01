@@ -2,13 +2,16 @@ import os
 import sys
 import json
 import numpy as np
+import matplotlib.pyplot as plt
 import torch
 from PIL import Image
 from datetime import datetime
 from models.eval.eval import Eval
 from env.thor_env import ThorEnv
+from scripts.generate_maskrcnn import MaskRCNNDetector, CustomImageLoader
 from models.model.t5 import vis_encoder
 from models.utils.debug_utils import plot_mask
+import gen.constants
 
 class EvalTask(Eval):
     '''
@@ -16,7 +19,7 @@ class EvalTask(Eval):
     '''
 
     @classmethod
-    def run(cls, model, resnet, task_queue, args, lock, successes, failures, results):
+    def run(cls, model, resnet, image_loader, region_detector, task_queue, args, lock, successes, failures, results):
         '''
         evaluation loop
         '''
@@ -34,7 +37,7 @@ class EvalTask(Eval):
                 r_idx = task['repeat_idx']
                 print("Evaluating: %s" % (traj['root']))
                 print("No. of trajectories left: %d" % (task_queue.qsize()))
-                cls.evaluate(env, model, r_idx, resnet, traj, args, lock, successes, failures, results)
+                cls.evaluate(env, model, r_idx, resnet, image_loader, region_detector, traj, args, lock, successes, failures, results)
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -46,11 +49,13 @@ class EvalTask(Eval):
 
 
     @classmethod
-    def evaluate(cls, env, model, r_idx, resnet, traj_data, args, lock, successes, failures, results):
+    def evaluate(cls, env, model, r_idx, resnet, image_loader, region_detector, traj_data, args, lock, successes, failures, results):
         # reset model
         #model.reset()
+        device = torch.device("cpu")
         if vars(args)["gpu"]:
             model = model.to('cuda')
+            device = torch.device("cuda")
 
         # setup scene
         reward_type = 'dense'
@@ -66,6 +71,9 @@ class EvalTask(Eval):
         fails = 0
         t = 0
         reward = 0
+        classes = ['0'] + gen.constants.OBJECTS + ['AppleSliced', 'ShowerCurtain', 'TomatoSliced', 'LettuceSliced', 'Lamp',
+                                                'ShowerHead', 'EggCracked', 'BreadSliced', 'PotatoSliced', 'Faucet']
+
         state_history = torch.tensor([])
         while not done:
             # break if max_steps reached
@@ -79,6 +87,20 @@ class EvalTask(Eval):
             breakpoint()
             feat['all_states'] = torch.cat([curr_state, state_history.cpu()], dim=1)
 
+            object_features = cls.get_visual_features(env, image_loader, region_detector, args, device)
+            # maybe the first dim of object_features corresponds to batch size? idk
+            # object_features[0]["masks"] : (num_objects, 1, 300, 300)
+            # object_features[0]["class_probs"]: (num_objects)
+            # object_features[0]["class_labels"]: (num_objects)
+            for feature in object_features:
+                for i, label in enumerate(feature["class_labels"]):
+                    if feature["class_probs"][i] > 0.8:
+                        print(label)
+                        print(classes[label])
+                #plt.imshow(feature["masks"][0][0])
+                #plt.show()
+
+            # forward model
             print("t: ", t)
             if vars(args)["gpu"]:
                 m_out = model.test_generate(
@@ -101,7 +123,7 @@ class EvalTask(Eval):
             state_history = m_out['states']
             m_pred = model.decode_prediction(m_out['actions'], curr_image)
             print(m_pred)
-            
+
             # check if <<stop>> was predicted
             if m_pred['action_low'] == cls.STOP_TOKEN:
                 print("\tpredicted STOP")
@@ -111,9 +133,8 @@ class EvalTask(Eval):
             action, mask = m_pred['action_low'], m_pred['action_low_mask']
             mask = mask if model.has_interaction(action) else None
 
-            # NOTE: Sahit I added this debug util to plot_mask(), I hope it can be helpful with the CNN model
             if args.debug:
-                plot_mask(mask, 'mask.png')
+                plot_mask(feature["masks"][0][0], 'mask.png')
 
             # print action
             if args.debug:
