@@ -21,7 +21,7 @@ import numpy as np
 from gen.utils.image_util import decompress_mask
 from torch.nn.utils.rnn import pad_sequence
 from transformers import AdamW
-from models.model.t5 import GoalConditionedTransformer
+from models.model.t5 import GoalConditionedTransformer, unCamelSnakeCase
 from tqdm import tqdm
 import itertools as it
 import random
@@ -111,7 +111,7 @@ class ALFREDDataloader(DataLoader):
                                 action_nl += ": " + action_args['object'].strip()
                             if 'receptacle' in action_args:
                                 action_nl += " in " + action_args['receptacle']
-                        action_nl = self.unCamelSnakeCase(action_nl).replace('  ', ' ')+','
+                        action_nl = unCamelSnakeCase(action_nl).replace('  ', ' ')+','
                         action_sequence.append(action_nl)
                         if action['mask'] is not None:
                             assert action['valid_interact'] == 1
@@ -141,13 +141,6 @@ class ALFREDDataloader(DataLoader):
             for task in tqdm(dataset):
                 new_dataset.append(self.load_task_json(task, args.data, args.pp_folder))
         super().__init__(new_dataset, batch_size, collate_fn=self.collate_fn)
-
-    def unCamelSnakeCase(self, action_str):
-        """
-        for all actions and all objects uncamel case and unsnake case.
-        Also remove all nubmers
-        """
-        return re.sub(r'((?=[A-Z])|(\d+)|_|  )', ' ', action_str).lower().strip()
 
     def process_action_args(self, api_action):
         '''
@@ -407,6 +400,13 @@ if __name__ == '__main__':
                 i_mask=feat['input_goals']['attention_mask'],
                 o_mask=feat['action_seq_past']['attention_mask'],
             )['actions']
+            all_action_scores = model.score_all_actions(
+                goal_representation=feat['input_goals']['input_ids'],
+                action_seq_past=feat['action_seq_past']['input_ids'],
+                image_seq_w_curr=feat['state_seq_w_curr'],
+                i_mask=feat['input_goals']['attention_mask'],
+                o_mask=feat['action_seq_past']['attention_mask'],
+            )
             acc = dl_splits['valid_seen'].compute_metrics(outputs, feat)['accuracy']
             best_acc += acc
             best_loss += loss
@@ -445,43 +445,80 @@ if __name__ == '__main__':
             step += 1
             if step%500 == 0:
                 torch.save(model.state_dict(), f"{save_path[:-4]}_ep{epoch}_step{step}.pth")
+                # evaluate
+                model.eval()
+                with torch.no_grad():
+                    eval_iter = tqdm(dl_splits['valid_seen'], desc='valid (seen)')
+                    epoch_acc = 0.0
+                    epoch_loss = 0.0
+                    n_batches = 0
+                    for batch, feat in eval_iter:
+                        # 'input_goals', 'state_seq', 'action_seq', 'action_mask_seq'
+                        loss = model.train_forward(
+                            goal_representation=feat['input_goals']['input_ids'],
+                            action_sequence=feat['action_seq_w_curr']['input_ids'],
+                            image_sequence=feat['state_seq_w_curr'],
+                            i_mask=feat['input_goals']['attention_mask'],
+                            o_mask=feat['action_seq_w_curr']['attention_mask'],
+                        ).loss
+                        outputs, _ = model.test_generate(
+                            goal_representation=feat['input_goals']['input_ids'],
+                            action_seq_past=feat['action_seq_past']['input_ids'],
+                            image_seq_w_curr=feat['state_seq_w_curr'],
+                            i_mask=feat['input_goals']['attention_mask'],
+                            o_mask=feat['action_seq_past']['attention_mask'],
+                        )['actions']
+                        acc = dl_splits['valid_seen'].compute_metrics(outputs, feat)['accuracy']
+                        epoch_loss += loss
+                        epoch_acc += acc
+                        n_batches += 1
+                        eval_iter.set_description(f"valid (seen) loss: {epoch_loss / n_batches} // accuracy: {epoch_acc / n_batches}")
+                    epoch_loss = epoch_loss / n_batches if n_batches > 0 else 0
+                    epoch_acc = epoch_acc / n_batches if n_batches > 0 else 0
+                    print(f"Epoch {epoch} valid (seen) loss: {epoch_loss} // accuracy: {epoch_acc}")
+                    if epoch_acc > best_acc  or (epoch_acc == best_acc and epoch_loss < best_loss):
+                        print("Saving model")
+                        torch.save(model.state_dict(), save_path)
+                        best_loss = epoch_loss
+                        best_acc = epoch_acc
+                torch.save(model.state_dict(), f"{save_path[:-4]}_ep{epoch}.pth")
 
-        # evaluate
-        model.eval()
-        with torch.no_grad():
-            eval_iter = tqdm(dl_splits['valid_seen'], desc='valid (seen)')
-            epoch_acc = 0.0
-            epoch_loss = 0.0
-            n_batches = 0
-            for batch, feat in eval_iter:
-                # 'input_goals', 'state_seq', 'action_seq', 'action_mask_seq'
-                #TODO
-                # 'input_goals', 'state_seq', 'action_seq', 'action_mask_seq'
-                loss = model.train_forward(
-                    goal_representation=feat['input_goals']['input_ids'],
-                    action_sequence=feat['action_seq_w_curr']['input_ids'],
-                    image_sequence=feat['state_seq_w_curr'],
-                    i_mask=feat['input_goals']['attention_mask'],
-                    o_mask=feat['action_seq_w_curr']['attention_mask'],
-                ).loss
-                outputs, _ = model.test_generate(
-                    goal_representation=feat['input_goals']['input_ids'],
-                    action_seq_past=feat['action_seq_past']['input_ids'],
-                    image_seq_w_curr=feat['state_seq_w_curr'],
-                    i_mask=feat['input_goals']['attention_mask'],
-                    o_mask=feat['action_seq_past']['attention_mask'],
-                )['actions']
-                acc = dl_splits['valid_seen'].compute_metrics(outputs, feat)['accuracy']
-                epoch_loss += loss
-                epoch_acc += acc
-                n_batches += 1
-                eval_iter.set_description(f"valid (seen) loss: {epoch_loss / n_batches} // accuracy: {epoch_acc / n_batches}")
-            epoch_loss = epoch_loss / n_batches if n_batches > 0 else 0
-            epoch_acc = epoch_acc / n_batches if n_batches > 0 else 0
-            print(f"Epoch {epoch} valid (seen) loss: {epoch_loss} // accuracy: {epoch_acc}")
-            if epoch_acc > best_acc  or (epoch_acc == best_acc and epoch_loss < best_loss):
-                print("Saving model")
-                torch.save(model.state_dict(), save_path)
-                best_loss = epoch_loss
-                best_acc = epoch_acc
-        torch.save(model.state_dict(), f"{save_path[:-4]}_ep{epoch}.pth")
+        # # evaluate
+        # model.eval()
+        # with torch.no_grad():
+        #     eval_iter = tqdm(dl_splits['valid_seen'], desc='valid (seen)')
+        #     epoch_acc = 0.0
+        #     epoch_loss = 0.0
+        #     n_batches = 0
+        #     for batch, feat in eval_iter:
+        #         # 'input_goals', 'state_seq', 'action_seq', 'action_mask_seq'
+        #         #TODO
+        #         # 'input_goals', 'state_seq', 'action_seq', 'action_mask_seq'
+        #         loss = model.train_forward(
+        #             goal_representation=feat['input_goals']['input_ids'],
+        #             action_sequence=feat['action_seq_w_curr']['input_ids'],
+        #             image_sequence=feat['state_seq_w_curr'],
+        #             i_mask=feat['input_goals']['attention_mask'],
+        #             o_mask=feat['action_seq_w_curr']['attention_mask'],
+        #         ).loss
+        #         outputs, _ = model.test_generate(
+        #             goal_representation=feat['input_goals']['input_ids'],
+        #             action_seq_past=feat['action_seq_past']['input_ids'],
+        #             image_seq_w_curr=feat['state_seq_w_curr'],
+        #             i_mask=feat['input_goals']['attention_mask'],
+        #             o_mask=feat['action_seq_past']['attention_mask'],
+        #         )['actions']
+        #         acc = dl_splits['valid_seen'].compute_metrics(outputs, feat)['accuracy']
+        #         epoch_loss += loss
+        #         epoch_acc += acc
+        #         n_batches += 1
+        #         eval_iter.set_description(f"valid (seen) loss: {epoch_loss / n_batches} // accuracy: {epoch_acc / n_batches}")
+        #     epoch_loss = epoch_loss / n_batches if n_batches > 0 else 0
+        #     epoch_acc = epoch_acc / n_batches if n_batches > 0 else 0
+        #     print(f"Epoch {epoch} valid (seen) loss: {epoch_loss} // accuracy: {epoch_acc}")
+        #     if epoch_acc > best_acc  or (epoch_acc == best_acc and epoch_loss < best_loss):
+        #         print("Saving model")
+        #         torch.save(model.state_dict(), save_path)
+        #         best_loss = epoch_loss
+        #         best_acc = epoch_acc
+        # torch.save(model.state_dict(), f"{save_path[:-4]}_ep{epoch}.pth")
