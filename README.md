@@ -58,7 +58,7 @@ Rough summary of changes made in this branch
 
 ## Additional required setup:
 - install allennlp
-- install pytorch-ligtning
+- install pytorch-lightning
 
 - Add MaskRCNN weights:
 ```bash
