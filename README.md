@@ -29,7 +29,7 @@ $ sh download_data.sh json_feat
 
 ## Training the transformer
 ```bash
-python models/train/train_transformer.py --data data/json_feat_2.1.0 --model seq2seq_im_mask --dout exp/model:{model},name:pm_and_subgoals_01 --splits data/splits/oct21.json --gpu --batch 8 --pm_aux_loss_wt 0.1 --subgoal_aux_loss_wt 0.1
+python3 models/train/train_transformer.py --data /home/sahit/alfred-exploration/data/json_feat_2.1.0 --model seq2seq_im_mask --dout exp/model:{model},name:pm_and_subgoals_01 --splits /home/sahit/alfred-exploration/data/splits/oct21.json --gpu --batch 4 --pm_aux_loss_wt 0.1 --subgoal_aux_loss_wt 0.1 --save_path temp/transformer.pth --fast_epoch --save_path /home/sahit/alfred-exploration/models/pretrained/transformer.pth
 ```
 Add `--preprocess` the first time you run. In subsequent runs, you can remove this flag.
 

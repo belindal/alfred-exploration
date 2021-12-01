@@ -66,6 +66,7 @@ class EvalTask(Eval):
         fails = 0
         t = 0
         reward = 0
+        state_history = torch.tensor([])
         while not done:
             # break if max_steps reached
             if t >= args.max_steps:
@@ -73,28 +74,32 @@ class EvalTask(Eval):
 
             # extract visual features
             curr_image = Image.fromarray(np.uint8(env.last_event.frame))
-            feat['all_states'] = resnet.featurize([curr_image], batch=1)
-            feat['all_states'] = vis_encoder(feat['all_states'].cpu()).unsqueeze(0)
+            curr_state = resnet.featurize([curr_image], batch=1)
+            curr_state = vis_encoder(curr_state.cpu()).unsqueeze(0)
+            breakpoint()
+            feat['all_states'] = torch.cat([curr_state, state_history.cpu()], dim=1)
 
             print("t: ", t)
             if vars(args)["gpu"]:
                 m_out = model.test_generate(
                     feat["goal_representation"]["input_ids"],
-                    torch.zeros((1, 2), dtype=torch.int).to("cuda"),
+                    feat['actions']['input_ids'],
                     feat["all_states"].to("cuda"),
                     i_mask=feat["goal_representation"]["attention_mask"],
-                    o_mask=torch.ones((1, 2), dtype=torch.int).to("cuda"),
+                    o_mask=feat['actions']['attention_mask'],
                 )
             else:
                 m_out = model.test_generate(
-                    feat["goal_representation"]["input_ids"],
-                    torch.zeros((1, 2), dtype=torch.int).to("cpu"),
+                    feat["goal_representation"]["input_ids"].to("cpu"),
+                    feat['actions']['input_ids'].to("cpu"),
                     feat["all_states"].to("cpu"),
-                    i_mask=feat["goal_representation"]["attention_mask"],
-                    o_mask=torch.ones((1, 2), dtype=torch.int).to("cpu"),
+                    i_mask=feat["goal_representation"]["attention_mask"].to("cpu"),
+                    o_mask=feat['actions']['attention_mask'].to("cpu"),
                 )
-            breakpoint()
-            m_pred = model.decode_prediction(m_out, curr_image)
+            feat['actions']['input_ids'] = m_out['actions']
+            feat['actions']['attention_mask'] = m_out['mask']
+            state_history = m_out['states']
+            m_pred = model.decode_prediction(m_out['actions'], curr_image)
             print(m_pred)
             
             # check if <<stop>> was predicted
@@ -115,7 +120,6 @@ class EvalTask(Eval):
                 print(action)
             # use predicted action and mask (if available) to interact with the env
             t_success, _, _, err, _ = env.va_interact(action, interact_mask=mask, smooth_nav=args.smooth_nav, debug=args.debug)
-            breakpoint()
             if not t_success:
                 fails += 1
                 if fails >= args.max_fails:

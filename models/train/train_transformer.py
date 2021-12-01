@@ -164,7 +164,7 @@ class ALFREDDataloader(DataLoader):
             # 'goal', 'curr_subgoal', 'prev_subgoals', 'all_subgoals', '{state|action|action_mask}_{history|next|seq}',
             # if gt_alignment:
             #     feat['input_goals'].append(' '.join(item['goal'] + item['prev_subgoals'] + item['curr_subgoal']))
-            feat['input_goals'].append(''.join(item['goal'] + item['all_subgoals']).replace('  ', ' ').strip())
+            feat['input_goals'].append(''.join(item['goal'] + item['all_subgoals']).replace('<<goal>>', ' [goal]').replace('<<stop>>', ' [stop]').replace('  ', ' ').strip())
 
             # expand `state_seq` and `action_mask_seq` for each token of `action_seq`
             expanded_seqs = {f'{seq_type}_{seq_span}': [] for seq_type in ['state', 'action_mask'] for seq_span in ['seq_w_curr', 'seq_past', 'curr']}
@@ -192,7 +192,7 @@ class ALFREDDataloader(DataLoader):
             assert feat['action_mask_seq_w_curr'][-1].size(0) == feat['state_seq_w_curr'][-1].size(0)
         for key in feat:
             if type(feat[key][0]) == str:
-                feat[key] = self.tokenizer(feat[key], return_tensors='pt', padding=True).to(device)
+                feat[key] = self.tokenizer(feat[key], return_tensors='pt', padding=True, add_special_tokens=(False if 'action' in key else True)).to(device)
             elif type(feat[key][0]) == torch.Tensor:
                 feat[key] = self.pad_stack(feat[key], pad_id=-100 if key=='mask' else 0)
             else:
@@ -321,7 +321,7 @@ if __name__ == '__main__':
     # initial evaluation
     best_acc = 0.0
     best_loss = float("inf")
-    # """
+    """
     model.eval()
     with torch.no_grad():
         # eval_iter = tqdm(dl_splits['valid_seen'], desc='valid (seen)')
@@ -331,8 +331,6 @@ if __name__ == '__main__':
         n_batches = 0
         for batch, feat in eval_iter:
             # 'input_goals', 'state_seq', 'action_seq', 'action_mask_seq'
-            #TODO
-            # 'input_goals', 'state_seq', 'action_seq', 'action_mask_seq'
             all_outputs = model.train_forward(
                 goal_representation=feat['input_goals']['input_ids'],
                 action_sequence=feat['action_seq_w_curr']['input_ids'],
@@ -341,13 +339,13 @@ if __name__ == '__main__':
                 o_mask=feat['action_seq_w_curr']['attention_mask'],
             )
             loss = all_outputs.loss
-            outputs, _ = model.test_generate(
+            outputs = model.test_generate(
                 goal_representation=feat['input_goals']['input_ids'],
                 action_sequence=feat['action_seq_w_curr']['input_ids'],
                 image_sequence=feat['state_seq_w_curr'],
                 i_mask=feat['input_goals']['attention_mask'],
                 o_mask=feat['action_seq_w_curr']['attention_mask'],
-            )
+            )['actions']
             acc = dl_splits['valid_seen'].compute_metrics(outputs, feat)['accuracy']
             best_acc += acc
             best_loss += loss
@@ -409,7 +407,7 @@ if __name__ == '__main__':
                     goal_representation=feat['input_goals']['input_ids'],
                     action_sequence=feat['action_seq_past']['input_ids'],
                     image_sequence=feat['state_seq_past'],
-                )
+                )['actions']
                 acc = dl_splits['valid_seen'].compute_metrics(outputs, feat)['accuracy']
                 epoch_loss += loss
                 epoch_acc += acc
