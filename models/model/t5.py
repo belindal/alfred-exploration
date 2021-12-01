@@ -86,9 +86,9 @@ class GoalConditionedTransformer(nn.Module):
         action_sequence_mask = F.pad(input=o_mask, pad=(1,0,0,0), value=1)
         image_sequence = image_seq_w_curr[:,:action_seq_past.size(1)+1,:].clone()
         assert image_sequence.size()[:2] == action_sequence.size()
-        # sanity check
-        if image_sequence.size(1) > 1:
-            assert not (image_sequence[:,-1,:] == image_sequence[:,-2,:]).all()
+        # # sanity check
+        # if image_sequence.size(1) > 1:
+        #     assert not (image_sequence[:,-1,:] == image_sequence[:,-2,:]).all()
         embedded_action_sequence = self.model.decoder.embed_tokens(action_sequence)
         # (bs, n_tokens_in_history + 1, linear_out_dim)
         fused_action_image_rep = self.fusion_module(torch.cat([embedded_action_sequence, image_sequence], dim=-1))
@@ -115,7 +115,7 @@ class GoalConditionedTransformer(nn.Module):
                 decoder_inputs_embeds=fused_action_image_rep, decoder_attention_mask=action_sequence_mask,
             )
             next_logit_scores, next_logits = model_output.logits[torch.arange(bs),last_token_pos].max(-1)
-            next_image = image_sequence[torch.arange(bs),last_token_pos-1]  # repeat current state
+            next_image = image_sequence[torch.arange(bs),last_token_pos]  # repeat current state
             # if the action has ended, next token must be padding
             next_logit_scores[ended_actions] = 0  # P(pad after end) = 1
             next_logits[ended_actions] = self.tokenizer.pad_token_id
@@ -139,12 +139,12 @@ class GoalConditionedTransformer(nn.Module):
             if ended_actions.all(): break
             # """
         if ended_actions.all():
-            # remove extra padding
+            # remove extra padding and bos token id
             # (bs, n_tokens)
-            action_sequence = action_sequence[:,:last_token_pos.max()+1]
-            action_sequence_mask = action_sequence_mask[:,:last_token_pos.max()+1]
+            action_sequence = action_sequence[:,1:last_token_pos.max()+1]
+            action_sequence_mask = action_sequence_mask[:,1:last_token_pos.max()+1]
             # (bs, n_tokens, image_dim)
-            image_sequence = image_sequence[:,:last_token_pos.max()+1,:]
+            image_sequence = image_sequence[:,1:last_token_pos.max()+1,:]
         # bs x n_gen_tokens
         next_actions = torch.stack(next_actions, dim=1)
         # bs x n_gen_tokens -> bs
@@ -194,17 +194,32 @@ class GoalConditionedTransformer(nn.Module):
         return feat
     
     @classmethod
-    def generate_naive_action_mask(cls, _action, _curr_image):
+    def generate_naive_action_mask(cls, _action, _curr_image, _curr_image_features):
         m = np.zeros((300, 300))
         m[140:160, 140:160] = 1
         return m
+    
+    @classmethod
+    def generate_action_mask(cls, action, curr_image, image_obj_features):
+        m = np.zeros((300, 300))
+        # extract object(s) from action
+        object_names = action.split(':')[-1].strip()
+        object_names = object_names.split(' in ')
+        breakpoint()
+        for feature in image_obj_features:
+            for i, label in enumerate(feature["class_labels"]):
+                if feature["class_probs"][i] > 0.8:
+                    print(label)
+                    print(classes[label])
+                feature['masks'][0][0]
+        return m
 
-    def decode_prediction(self, m_out, curr_image):
+    def decode_prediction(self, m_out, curr_image, object_features):
         # TODO: Maybe cast all actions to be within the 13 valid tokens.
         # Also this is a good place to add in the exploration
         action = self.tokenizer.decode(m_out[0], skip_special_tokens=True).split(",")[0].strip()
         mask = (
-            self.generate_naive_action_mask(action, curr_image)
+            self.generate_action_mask(action, curr_image, object_features)
             if self.has_interaction(action)
             else None
         )

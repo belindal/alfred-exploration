@@ -80,11 +80,13 @@ class EvalTask(Eval):
             if t >= args.max_steps:
                 break
 
+            if t > 0:
+                breakpoint()
             # extract visual features
             curr_image = Image.fromarray(np.uint8(env.last_event.frame))
             curr_state = resnet.featurize([curr_image], batch=1)
             curr_state = vis_encoder(curr_state.cpu()).unsqueeze(0)
-            feat['all_states'] = torch.cat([curr_state, state_history.cpu()], dim=1)
+            feat['all_states'] = torch.cat([state_history.cpu(), curr_state], dim=1)
 
             object_features = cls.get_visual_features(env, image_loader, region_detector, args, device)
             # maybe the first dim of object_features corresponds to batch size? idk
@@ -102,7 +104,6 @@ class EvalTask(Eval):
             # forward model
             print("t: ", t)
             if vars(args)["gpu"]:
-                breakpoint()
                 m_out = model.test_generate(
                     feat["goal_representation"]["input_ids"],
                     feat['actions']['input_ids'],
@@ -118,11 +119,10 @@ class EvalTask(Eval):
                     i_mask=feat["goal_representation"]["attention_mask"].to("cpu"),
                     o_mask=feat['actions']['attention_mask'].to("cpu"),
                 )
-            breakpoint()
             feat['actions']['input_ids'] = m_out['action_seq']
             feat['actions']['attention_mask'] = m_out['action_seq_mask']
             state_history = m_out['states_seq']
-            m_pred = model.decode_prediction(m_out['actions'], curr_image)
+            m_pred = model.decode_prediction(m_out['actions'], curr_image, object_features)
             print(m_pred)
 
             # check if <<stop>> was predicted
