@@ -81,16 +81,27 @@ class ALFREDDataloader(DataLoader):
                 assert len(ex['ann']['instr']) == len(ex['num']['action_low'])
                 prev_subgoals = []
                 action_sequence = []
+                action_args_sequence = []
                 action_mask_sequence = []
                 all_subgoals = [[sg.rstrip() for sg in subgoal] for subgoal in ex['ann']['instr']]
                 all_subgoals_flattened = list(it.chain(*all_subgoals))
-                action_idx = 0
+                frame_idx = 0
+                api_actions_by_subgoal = self.get_api_actions_by_subgoals(ex, all_subgoals)             
                 for subgoal_idx, subgoal in enumerate(all_subgoals):
                     # in terms of the action vocabulary
                     # subgoal_actions = self.vocab['action_high'].index2word(ex['num']['action_high'][subgoal_idx]['action'])
-                    for action in ex['num']['action_low'][subgoal_idx]:
+                    for action_idx, action in enumerate(ex['num']['action_low'][subgoal_idx]):
                         action_low = self.vocab['action_low'].index2word(action['action'])
                         action_sequence.append(action_low)
+                        if action_low == '<<stop>>':
+                            # special case where api_actions_by_subgoal[subgoal_idx] will be empty
+                            action_args_sequence.append({})
+                        else:
+                            api_action = api_actions_by_subgoal[subgoal_idx][action_idx]
+                            assert (
+                                api_action["action"] == action_low
+                            ), "Action must match to action_low otherwise our action_args sequence is all screwy"
+                            action_args_sequence.append(self.process_action_args(api_action))
                         if action['mask'] is not None:
                             assert action['valid_interact'] == 1
                         else:
@@ -99,15 +110,19 @@ class ALFREDDataloader(DataLoader):
                         if curr_action_mask is not None and self.action_mask_dim is None:
                             self.action_mask_dim = curr_action_mask.size()
                         action_mask_sequence.append(curr_action_mask)
-                        action_idx += 1
-
+                        frame_idx += 1
                         new_ex = {
-                            'goal': goal,
+                            "goal": goal,
                             # make copies of lists
-                            'all_subgoals': all_subgoals_flattened, 'prev_subgoals': [sg for sg in prev_subgoals], 'curr_subgoal': subgoal,
-                            'state_seq': all_frames[:action_idx], 'action_seq': [a for a in action_sequence], 'action_mask_seq': [am for am in action_mask_sequence],
+                            "all_subgoals": all_subgoals_flattened,
+                            "prev_subgoals": [sg for sg in prev_subgoals],
+                            "curr_subgoal": subgoal,
+                            "state_seq": all_frames[:frame_idx],
+                            "action_seq": [a for a in action_sequence],
+                            "action_mask_seq": [am for am in action_mask_sequence],
+                            "action_args_seq": [arg for arg in action_args_sequence]
                         }
-                        assert len(new_ex['state_seq']) == len(new_ex['action_seq']) == len(new_ex['action_mask_seq'])
+                        assert len(new_ex['state_seq']) == len(new_ex['action_seq']) == len(new_ex['action_mask_seq']) == len(new_ex['action_args_seq'])
                         new_dataset.append(new_ex)
                     prev_subgoals += subgoal
         else:
@@ -116,6 +131,35 @@ class ALFREDDataloader(DataLoader):
                 new_dataset.append(self.load_task_json(task, args.data, args.pp_folder))
         super().__init__(new_dataset, batch_size, collate_fn=self.collate_fn)
 
+    def process_action_args(self, api_action):
+        '''
+        example api_action:
+        {
+            "action": "PutObject",
+            "forceAction": True,
+            "objectId": "ButterKnife|+00.29|+00.93|+00.99",
+            "placeStationary": True,
+            "receptacleObjectId": "Mug|-00.16|+00.93|+00.08",
+        }
+        '''
+        args = {}
+        if 'objectId' in api_action and api_action['objectId'].find('|') > 0:
+            objId = api_action['objectId']
+            args['object'] = objId[:objId.find('|')]
+        if 'receptacleObjectId' in api_action and api_action['receptacleObjectId'].find('|') > 0:
+            recpId = api_action['receptacleObjectId']
+            args['receptacle'] = recpId[:recpId.find('|')]
+        return args
+
+    def get_api_actions_by_subgoals(self, ex, all_subgoals):
+        api_actions_by_subgoal = {subgoal_idx: [] for subgoal_idx in range(len(all_subgoals))}
+        for la in ex["plan"]["low_actions"]:
+            api_action = la["api_action"]
+            api_action['action'] = la["discrete_action"]['action']
+            api_actions_by_subgoal[la["high_idx"]] = api_actions_by_subgoal[
+                la["high_idx"]
+            ] + [api_action]   
+        return api_actions_by_subgoal
 
     def decompress_mask(self, compressed_mask):
         '''
