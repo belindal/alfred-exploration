@@ -9,8 +9,33 @@ from models.nn.vnn import ResnetVisualEncoder
 import regex as re
 import gen
 
+
+def unCamelSnakeCase(action_str):
+    """
+    for all actions and all objects uncamel case and unsnake case.
+    Also remove all nubmers
+    """
+    return re.sub(r'((?=[A-Z])|(\d+)|_|  )', ' ', action_str).lower().strip()
+
+def snake_to_camel(action_str):
+    """
+    for all actions and all objects unsnake case and camel case.
+    re-add numbers
+    """
+    def camel(match):
+        return match.group(1)[0].upper() + match.group(1)[1:] + match.group(2).upper()
+    action_str = re.sub(r'(.*?) ([a-zA-Z])', camel, action_str)
+    if action_str.startswith("Look"):  # LookDown_15, LookUp_15
+        action_str += "_15"
+    if action_str.startswith("Rotate"):  # RotateRight_90, RotateLeft_90
+        action_str += "_90"
+    if action_str.startswith("Move"):  # MoveAhead_25
+        action_str += "_25"
+    return action_str[0].upper() + action_str[1:]
+
 vis_encoder = ResnetVisualEncoder(dframe=512)
 API_ACTIONS = ["PickupObject", "ToggleObject", "LookDown_15", "MoveAhead_25", "RotateLeft_90", "LookUp_15", "RotateRight_90", "ToggleObjectOn", "ToggleObjectOff", "PutObject", "SliceObject", "OpenObject", "CloseObject"]
+API_ACTIONS_NATURALIZED = [unCamelSnakeCase(action) for action in API_ACTIONS]
 CLASSES = ['0'] + gen.constants.OBJECTS + ['AppleSliced', 'ShowerCurtain', 'TomatoSliced', 'LettuceSliced', 'Lamp',
                                         'ShowerHead', 'EggCracked', 'BreadSliced', 'PotatoSliced', 'Faucet']
 
@@ -29,7 +54,7 @@ class GoalConditionedTransformer(nn.Module):
         self.fusion_module = nn.Linear(self.concat_dim, self.hidden_dim)
         self.device = torch.device('cuda') if self.args.gpu else torch.device('cpu')
 
-    def setup_inputs(self, goal_representation, action_sequence, image_sequence,i_mask,o_mask):
+    def setup_inputs_for_train(self, goal_representation, action_sequence, image_sequence,i_mask,o_mask):
         # encode goal with T5 encoder
         # assume action_sequence doesn't have start id
         # (bs, n_tokens,)
@@ -54,33 +79,11 @@ class GoalConditionedTransformer(nn.Module):
         }
 
     def train_forward(self, goal_representation, action_sequence, image_sequence,i_mask,o_mask):
-        transformer_inputs = self.setup_inputs(goal_representation, action_sequence, image_sequence,i_mask,o_mask)
+        transformer_inputs = self.setup_inputs_for_train(goal_representation, action_sequence, image_sequence,i_mask,o_mask)
         model_outs = self.model(**transformer_inputs)
         return model_outs
 
-    def test_generate(self, goal_representation, action_seq_past, image_seq_w_curr, i_mask=None, o_mask=None, topk=1, object_list=None):
-        """
-        goal_representation: (bs, # tokens in goal)
-        action_seq_past: (bs, tok_len of action sequence history)
-        image_seq_w_curr: (bs, tok_len of action sequence history + tok_len of curr action/1, image_dim) [+1 for end of next state]
-        i_mask:
-        """
-        # # action_sequence_shifted = F.pad(input=action_sequence, pad=(1,0,0,0), value=self.model.config.decoder_start_token_id)
-        # # add <bos> tokens and remove <eos> tokens
-        # # (bs, n_tokens)
-        # action_sequence_shifted = action_sequence.new_zeros(action_sequence.shape)
-        # action_sequence_shifted[..., 1:] = action_sequence[..., :-1].clone()
-        # action_sequence_shifted[..., 0] = self.model.config.decoder_start_token_id
-        # # action_sequence_shifted[action_sequence_shifted == self.tokenizer.eos_token_id] = self.tokenizer.pad_token_id
-        # if image_sequence.size(1) != action_sequence_shifted.size(1):
-        #     breakpoint()
-        #     assert image_sequence.size(1) + 1 == action_sequence_shifted.size(1)
-        #     # (bs, n_tokens+1, image_dim)
-        #     image_sequence_shifted = torch.cat([image_sequence[:,0,...].unsqueeze(1), image_sequence], dim=1).view(*action_sequence.size(), -1)
-        # else:
-        #     # (bs, n_tokens+1)
-        #     image_sequence_shifted = image_sequence.clone()
-
+    def setup_inputs_for_generate(self, goal_representation, action_seq_past, image_seq_w_curr, i_mask=None, o_mask=None):
         """
         Suppose action 0 has 4 tokens: [a0, a0, a0, a0]
         [bos, a0, a0, a0, a0] = action_sequence
@@ -97,6 +100,18 @@ class GoalConditionedTransformer(nn.Module):
         embedded_action_sequence = self.model.decoder.embed_tokens(action_sequence)
         # (bs, n_tokens_in_history + 1, linear_out_dim)
         fused_action_image_rep = self.fusion_module(torch.cat([embedded_action_sequence, image_sequence], dim=-1))
+        return action_sequence, action_sequence_mask, image_sequence, fused_action_image_rep
+
+    def test_generate(self, goal_representation, action_seq_past, image_seq_w_curr, i_mask=None, o_mask=None, topk=1, object_list=None):
+        """
+        goal_representation: (bs, # tokens in goal)
+        action_seq_past: (bs, tok_len of action sequence history)
+        image_seq_w_curr: (bs, tok_len of action sequence history + tok_len of curr action/1, image_dim) [+1 for end of next state]
+        i_mask:
+        """
+        action_sequence, action_sequence_mask, image_sequence, fused_action_image_rep = self.setup_inputs_for_generate(
+            goal_representation, action_seq_past, image_seq_w_curr, i_mask=i_mask, o_mask=o_mask,
+        )
 
         scores = []
         next_actions = []
@@ -168,6 +183,33 @@ class GoalConditionedTransformer(nn.Module):
         scores = -torch.stack(scores, dim=1).sum(-1)
         return {'actions': next_actions, 'action_seq': action_sequence, 'action_seq_mask': action_sequence_mask, 'states_seq': image_sequence, 'log_probs': scores}
 
+    def score_all_actions(self, goal_representation, action_seq_past, image_seq_w_curr, i_mask, o_mask):
+        action_sequence, action_sequence_mask, image_sequence, fused_action_image_rep = self.setup_inputs_for_generate(
+            goal_representation, action_seq_past, image_seq_w_curr, i_mask=i_mask, o_mask=o_mask,
+        )
+        # return scores of all possible actions
+        encoder_outputs = self.model.encoder(
+            input_ids=goal_representation, attention_mask=i_mask,
+        )
+        all_action_tokens = self.tokenizer(API_ACTIONS_NATURALIZED, return_tensors='pt', padding=True, add_special_tokens=False).to(self.device)
+
+        bs = goal_representation.size(0)
+        last_token_pos = torch.stack([
+            (action_sequence[idx] == 6).nonzero().max() if (action_sequence[idx] == 6).any() else torch.tensor(0).to(self.device) for idx in range(bs)
+        ])
+        breakpoint()
+        action_scores = []
+        # iterate across tokens of each action
+        for tok_idx in range(all_action_tokens['input_ids'].size(1)):
+            model_outputs = self.model(
+                encoder_outputs=encoder_outputs, decoder_inputs_embeds=fused_action_image_rep, decoder_attention_mask=action_sequence_mask,
+            )
+            # (bs, seqlen, vocab_size) -> (bs, vocab_size)
+            last_tok_logits = model_outputs.logits[torch.arange(bs), last_token_pos]
+            last_tok_probs = torch.log_softmax(last_tok_logits, dim=-1)
+            # (bs, vocab_size) -> (bs, # actions, vocab_size)
+            batch_action_probs = last_tok_probs[:, all_action_tokens['input_ids'][:,tok_idx]]
+
     @classmethod
     def load(cls, args, fsave):
         model = cls(args=args)
@@ -228,36 +270,19 @@ class GoalConditionedTransformer(nn.Module):
         obj_masks = []
         for obj_name in object_names:
             try:
-                obj_idx = obj_label2feature_idx[cls.snake_to_camel(obj_name)]
+                obj_idx = obj_label2feature_idx[snake_to_camel(obj_name)]
             except Exception as e:
                 print("trying to interact with an object not in the scene")
                 breakpoint()
             obj_masks.append(image_obj_features['masks'][obj_idx][0])
         return m
 
-    @classmethod
-    def snake_to_camel(cls, action_str):
-        """
-        for all actions and all objects unsnake case and camel case.
-        re-add numbers
-        """
-        def camel(match):
-            return match.group(1)[0].upper() + match.group(1)[1:] + match.group(2).upper()
-        action_str = re.sub(r'(.*?) ([a-zA-Z])', camel, action_str)
-        if action_str.startswith("Look"):  # LookDown_15, LookUp_15
-            action_str += "_15"
-        if action_str.startswith("Rotate"):  # RotateRight_90, RotateLeft_90
-            action_str += "_90"
-        if action_str.startswith("Move"):  # MoveAhead_25
-            action_str += "_25"
-        return action_str[0].upper() + action_str[1:]
-
     def decode_prediction(self, m_out, curr_image, object_features):
         # TODO: Maybe cast all actions to be within the 13 valid tokens.
         # Also this is a good place to add in the exploration
         action = self.tokenizer.decode(m_out, skip_special_tokens=True).split(",")[0].strip()
         # convert BACK to API action!!!
-        api_action = self.snake_to_camel(action.split(':')[0].strip())
+        api_action = snake_to_camel(action.split(':')[0].strip())
         assert api_action in API_ACTIONS, f"{api_action} is not part of {API_ACTIONS}!"
         mask = (
             self.generate_action_mask(action, curr_image, object_features)

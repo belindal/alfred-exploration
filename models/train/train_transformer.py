@@ -21,7 +21,7 @@ import numpy as np
 from gen.utils.image_util import decompress_mask
 from torch.nn.utils.rnn import pad_sequence
 from transformers import AdamW
-from models.model.t5 import GoalConditionedTransformer
+from models.model.t5 import GoalConditionedTransformer, unCamelSnakeCase
 from tqdm import tqdm
 import itertools as it
 import random
@@ -114,7 +114,7 @@ class ALFREDDataloader(DataLoader):
                                 action_nl += ": " + action_args['object'].strip()
                             if 'receptacle' in action_args:
                                 action_nl += " in " + action_args['receptacle']
-                        action_nl = self.unCamelSnakeCase(action_nl).replace('  ', ' ')+','
+                        action_nl = unCamelSnakeCase(action_nl).replace('  ', ' ')+','
                         action_sequence.append(action_nl)
                         if action['mask'] is not None:
                             assert action['valid_interact'] == 1
@@ -145,13 +145,6 @@ class ALFREDDataloader(DataLoader):
                 new_dataset.append(self.load_task_json(task, args.data, args.pp_folder))
         random.shuffle(new_dataset)
         super().__init__(new_dataset, batch_size, collate_fn=self.collate_fn)
-
-    def unCamelSnakeCase(self, action_str):
-        """
-        for all actions and all objects uncamel case and unsnake case.
-        Also remove all nubmers
-        """
-        return re.sub(r'((?=[A-Z])|(\d+)|_|  )', ' ', action_str).lower().strip()
 
     def process_action_args(self, api_action):
         '''
@@ -419,6 +412,13 @@ if __name__ == '__main__':
                 i_mask=feat['input_goals']['attention_mask'],
                 o_mask=feat['action_seq_past']['attention_mask'],
             )['actions']
+            all_action_scores = model.score_all_actions(
+                goal_representation=feat['input_goals']['input_ids'],
+                action_seq_past=feat['action_seq_past']['input_ids'],
+                image_seq_w_curr=feat['state_seq_w_curr'],
+                i_mask=feat['input_goals']['attention_mask'],
+                o_mask=feat['action_seq_past']['attention_mask'],
+            )
             metrics = dl_splits['valid_seen'].compute_metrics(outputs, feat)
             acc = metrics['accuracy']
             outputs = metrics['output_dicts']
