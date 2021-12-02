@@ -36,7 +36,7 @@ class ALFREDDataloader(DataLoader):
     *_curr; curr (single) state/action to output (i.e. d)
     *_seq_w_curr: sequence of states/actions including the curr one (i.e. [a,b,c,d])
     """
-    def __init__(self, args, vocab, dataset, split_type, batch_size, sep_actions: bool):
+    def __init__(self, args, vocab, dataset, split_type, batch_size, curr_subgoal_only: bool=False):
         self.vocab = vocab
         self.args = args
         # params
@@ -49,6 +49,7 @@ class ALFREDDataloader(DataLoader):
         for param in self.vis_encoder.parameters():
             param.requires_grad = False
         self.action_mask_dim = None
+        self.curr_subgoal_only = curr_subgoal_only
 
         if "train" in split_type or "valid" in split_type:
             # self.dataset = self.featurize(self.dataset)
@@ -89,13 +90,14 @@ class ALFREDDataloader(DataLoader):
                 frame_idx = 0
                 api_actions_by_subgoal = self.get_api_actions_by_subgoals(ex, all_subgoals)
                 for subgoal_idx, subgoal in enumerate(all_subgoals):
+                    curr_subgoal_action_idxs = []
                     # in terms of the action vocabulary
                     # subgoal_actions = self.vocab['action_high'].index2word(ex['num']['action_high'][subgoal_idx]['action'])
                     for action_idx, action in enumerate(ex['num']['action_low'][subgoal_idx]):
                         action_low = self.vocab['action_low'].index2word(action['action'])
-                        if "MoveAhead" in action_low:
-                            # Downsample moveahead
-                            if random.random() > 0.25: continue
+                        # if "MoveAhead" in action_low:
+                        #     # Downsample moveahead
+                        #     if random.random() > 0.25: continue
                         action_nl = action_low
                         if action_low == '<<stop>>':
                             # special case where api_actions_by_subgoal[subgoal_idx] will be empty
@@ -124,6 +126,7 @@ class ALFREDDataloader(DataLoader):
                         if curr_action_mask is not None and self.action_mask_dim is None:
                             self.action_mask_dim = curr_action_mask.size()
                         action_mask_sequence.append(curr_action_mask)
+                        curr_subgoal_action_idxs.append(frame_idx)
                         frame_idx += 1
                         new_ex = {
                             "goal": goal,
@@ -131,12 +134,13 @@ class ALFREDDataloader(DataLoader):
                             "all_subgoals": all_subgoals_flattened,
                             "prev_subgoals": [sg for sg in prev_subgoals],
                             "curr_subgoal": subgoal,
+                            "curr_subgoal_action_idxs": [action_idx for action_idx in curr_subgoal_action_idxs],
                             "state_seq": all_frames[:frame_idx],
                             "action_seq": [a for a in action_sequence],
                             "action_mask_seq": [am for am in action_mask_sequence],
                             "action_args_seq": [arg for arg in action_args_sequence]
                         }
-                        assert len(new_ex['state_seq']) == len(new_ex['action_seq']) == len(new_ex['action_mask_seq']) == len(new_ex['action_args_seq'])
+                        assert len(new_ex['state_seq']) == len(new_ex['action_seq']) == len(new_ex['action_mask_seq']) == len(new_ex['action_args_seq']) == new_ex['curr_subgoal_action_idxs'][-1] + 1
                         new_dataset.append(new_ex)
                     prev_subgoals += subgoal
         else:
@@ -219,21 +223,26 @@ class ALFREDDataloader(DataLoader):
         }
         feat['input_goals'] = []
         for item in batch:
-            assert len(item['action_seq']) == len(item['state_seq']) == len(item['action_mask_seq'])
-            # 'goal', 'curr_subgoal', 'prev_subgoals', 'all_subgoals', '{state|action|action_mask}_{history|next|seq}',
-            # if gt_alignment:
-            #     feat['input_goals'].append(' '.join(item['goal'] + item['prev_subgoals'] + item['curr_subgoal']))
-            feat['input_goals'].append(''.join(item['goal'] + item['all_subgoals']).replace('<<goal>>', ' [goal]').replace('<<stop>>', ' [stop]').replace('  ', ' ').strip())
-
+            # 'goal', 'curr_subgoal', 'prev_subgoals', 'all_subgoals', '{state|action|action_mask}_{history|next|seq}', 'curr_subgoal_action_idxs'
+            assert len(item['action_seq']) == len(item['state_seq']) == len(item['action_mask_seq']) == item['curr_subgoal_action_idxs'][-1] + 1
             # expand `state_seq` and `action_mask_seq` for each token of `action_seq`
             expanded_seqs = {f'{seq_type}_{seq_span}': [] for seq_type in ['state', 'action_mask'] for seq_span in ['seq_w_curr', 'seq_past', 'curr']}
-            for action_idx in range(len(item['action_seq'])):
+            if self.curr_subgoal_only:
+                feat['input_goals'].append(''.join(item['curr_subgoal']).replace('<<goal>>', ' [goal]').replace('<<stop>>', ' [stop]').replace('  ', ' ').strip())
+                action_idxs_for_goal = item['curr_subgoal_action_idxs']
+                action_sequence = [item['action_seq'][idx] for idx in action_idxs_for_goal]
+            else:
+                feat['input_goals'].append(''.join(item['goal'] + item['all_subgoals']).replace('<<goal>>', ' [goal]').replace('<<stop>>', ' [stop]').replace('  ', ' ').strip())
+                action_idxs_for_goal = list(range(len(item['action_seq'])))
+                action_sequence = item['action_seq']
+
+            for action_idx in action_idxs_for_goal:
                 for _ in self.tokenizer.tokenize(item['action_seq'][action_idx]):
                     for seq_type in ['state', 'action_mask']:
                         if item[f"{seq_type}_seq"][action_idx] is None:
                             assert seq_type == 'action_mask'
                             item[f"{seq_type}_seq"][action_idx] = torch.full(self.action_mask_dim, -100)  # (1, 300, 300)
-                        expanded_seqs[f'{seq_type}_seq_past' if action_idx < len(item['action_seq']) - 1 else f'{seq_type}_curr'].append(item[f"{seq_type}_seq"][action_idx])
+                        expanded_seqs[f'{seq_type}_seq_past' if action_idx < action_idxs_for_goal[-1] - 1 else f'{seq_type}_curr'].append(item[f"{seq_type}_seq"][action_idx])
                         expanded_seqs[f'{seq_type}_seq_w_curr'].append(item[f"{seq_type}_seq"][action_idx])
             for seq_key in expanded_seqs.keys():
                 feat[seq_key].append(
@@ -241,17 +250,21 @@ class ALFREDDataloader(DataLoader):
                     if len(expanded_seqs[seq_key]) > 0 else torch.tensor([]).to(device)
                 )
 
-            feat['action_seq_w_curr'].append(' '.join(item['action_seq']))
-            feat['action_seq_past'].append(' '.join(item['action_seq'][:-1]))
-            feat['action_curr'].append(item['action_seq'][-1])
+            feat['action_seq_w_curr'].append(' '.join(action_sequence))
+            feat['action_seq_past'].append(' '.join(action_sequence[:-1]))
+            feat['action_curr'].append(action_sequence[-1])
 
             # (n_actions, 512)
             assert feat['state_seq_w_curr'][-1].size(0) == len(self.tokenizer.tokenize(feat['action_seq_w_curr'][-1]))
-            # # (n_actions, 300, 300)
+            # (n_actions, 300, 300)
             assert feat['action_mask_seq_w_curr'][-1].size(0) == feat['state_seq_w_curr'][-1].size(0)
         for key in feat:
             if type(feat[key][0]) == str:
-                feat[key] = self.tokenizer(feat[key], return_tensors='pt', padding=True, add_special_tokens=(False if 'action' in key else True)).to(device)
+                feat_key_lens = [len(item) for item in feat[key]]
+                if max(feat_key_lens) == 0:
+                    feat[key] = {'input_ids': torch.Tensor(len(batch),0).to(device), 'attention_mask': torch.Tensor(len(batch),0).to(device)}
+                else:
+                    feat[key] = self.tokenizer(feat[key], return_tensors='pt', padding=True, add_special_tokens=(False if 'action' in key else True)).to(device)
             elif type(feat[key][0]) == torch.Tensor:
                 feat[key] = self.pad_stack(feat[key], pad_id=-100 if key=='mask' else 0)
             else:
@@ -293,6 +306,7 @@ if __name__ == '__main__':
     parser.add_argument('--dout', help='where to save model', default='exp/model:{model}')
     parser.add_argument('--use_templated_goals', help='use templated goals instead of human-annotated goal descriptions (only available for train set)', action='store_true')
     parser.add_argument('--resume', help='load a checkpoint')
+    parser.add_argument('--curr_subgoal_only', help='store preprocessed data to json files', action='store_true')
 
     # hyper parameters
     parser.add_argument('--batch', help='batch size', default=8, type=int)
@@ -360,7 +374,6 @@ if __name__ == '__main__':
         # if split_type == "train":
         #     sep_actions = True
         # else:
-        sep_actions = False
         print(f"Processing {split_type} dataset")
         if args.fast_epoch:
             splits[split_type] = splits[split_type][:5]
@@ -368,7 +381,7 @@ if __name__ == '__main__':
             splits[split_type] = random.sample(splits[split_type], args.train_size)
         else:
             splits[split_type] = random.sample(splits[split_type], 50)
-        dl_splits[split_type] = ALFREDDataloader(args, vocab, splits[split_type], split_type, args.batch, sep_actions)
+        dl_splits[split_type] = ALFREDDataloader(args, vocab, splits[split_type], split_type, args.batch, curr_subgoal_only=args.curr_subgoal_only)
 
     # load model
     # model = T5ForConditionalGeneration.from_pretrained('t5-small').to('cuda')
@@ -412,13 +425,13 @@ if __name__ == '__main__':
                 i_mask=feat['input_goals']['attention_mask'],
                 o_mask=feat['action_seq_past']['attention_mask'],
             )['actions']
-            all_action_scores = model.score_all_actions(
-                goal_representation=feat['input_goals']['input_ids'],
-                action_seq_past=feat['action_seq_past']['input_ids'],
-                image_seq_w_curr=feat['state_seq_w_curr'],
-                i_mask=feat['input_goals']['attention_mask'],
-                o_mask=feat['action_seq_past']['attention_mask'],
-            )
+            # all_action_scores = model.score_all_actions(
+            #     goal_representation=feat['input_goals']['input_ids'],
+            #     action_seq_past=feat['action_seq_past']['input_ids'],
+            #     image_seq_w_curr=feat['state_seq_w_curr'],
+            #     i_mask=feat['input_goals']['attention_mask'],
+            #     o_mask=feat['action_seq_past']['attention_mask'],
+            # )
             metrics = dl_splits['valid_seen'].compute_metrics(outputs, feat)
             acc = metrics['accuracy']
             outputs = metrics['output_dicts']

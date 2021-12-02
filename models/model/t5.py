@@ -135,26 +135,39 @@ class GoalConditionedTransformer(nn.Module):
                 input_ids=goal_representation, attention_mask=i_mask,
                 decoder_inputs_embeds=fused_action_image_rep, decoder_attention_mask=action_sequence_mask,
             )
-            # TODO(sahit): annotations
-            token_list = self.tokenizer(object_list, add_special_tokens=False, return_tensors='pt',padding=True)['input_ids'].flatten().to(self.device)
-            action_token_list = self.tokenizer(object_list[:13], add_special_tokens=False, return_tensors='pt',padding=True)['input_ids'].flatten().to(self.device)
-            #print(self.tokenizer.decode(token_list))
-            token_mask = torch.zeros(bs, self.model.config.vocab_size, dtype=torch.bool).to(self.device)
-            action_token_mask = torch.zeros(bs, self.model.config.vocab_size, dtype=torch.bool).to(self.device)
-            action_token_mask[:,action_token_list] = True
-            token_mask[:,token_list] = True
+            if object_list is not None:
+                assert bs == 1
+                # TODO(sahit): annotations
+                token_list = self.tokenizer(object_list, add_special_tokens=False, return_tensors='pt',padding=True)['input_ids'].flatten().to(self.device)
+                action_token_list = self.tokenizer(object_list[:13], add_special_tokens=False, return_tensors='pt',padding=True)['input_ids'].flatten().to(self.device)
+                #print(self.tokenizer.decode(token_list))
+                token_mask = torch.zeros(bs, self.model.config.vocab_size, dtype=torch.bool).to(self.device)
+                action_token_mask = torch.zeros(bs, self.model.config.vocab_size, dtype=torch.bool).to(self.device)
+                action_token_mask[:,action_token_list] = True
+                token_mask[:,token_list] = True
+            else:
+                action_token_mask = None
+                token_mask = None
 
             if unroll_idx == 0:
-                next_logit_score_dist, next_logits_dist = model_output.logits[0][last_token_pos][action_token_mask].topk(topk, dim=-1)
-                scores_dist = torch.distributions.Categorical(logits = next_logit_score_dist)
-                sampled_action_idx = scores_dist.sample()
-                next_logit_scores, next_logits = next_logit_score_dist[sampled_action_idx], next_logits_dist[sampled_action_idx]
-                next_logits = action_token_mask.nonzero()[:,1][next_logits]
+                n_cands_to_sample_from = topk
             else:
-                next_logit_scores, next_logits = model_output.logits[torch.arange(bs),last_token_pos][token_mask].max(-1)
-                next_logits = token_mask.nonzero()[:,1][next_logits]
-            next_logits = next_logits.unsqueeze(0)
-            next_logit_scores = next_logit_scores.unsqueeze(0)
+                n_cands_to_sample_from = 1
+            if action_token_mask is not None:
+                next_logit_score_dist, next_logits_dist = model_output.logits[0][last_token_pos][action_token_mask].topk(n_cands_to_sample_from, dim=-1)
+            else:
+                next_logit_score_dist, next_logits_dist = model_output.logits[torch.arange(bs),last_token_pos].topk(n_cands_to_sample_from, dim=-1)
+            scores_dist = torch.distributions.Categorical(logits = next_logit_score_dist)
+            sampled_action_idx = scores_dist.sample()
+            if action_token_mask is not None:
+                next_logit_scores, next_logits = next_logit_score_dist[sampled_action_idx].unsqueeze(0), next_logits_dist[sampled_action_idx]
+                # convert back to indices of tokenizer
+                next_logits = action_token_mask.nonzero()[:,1][next_logits].unsqueeze(0)
+            else:
+                # (bs,)
+                next_logit_scores = next_logit_score_dist.gather(-1,sampled_action_idx.unsqueeze(-1)).squeeze(-1)
+                next_logits = next_logits_dist.gather(-1,sampled_action_idx.unsqueeze(-1)).squeeze(-1)
+
             next_image = image_sequence[torch.arange(bs),last_token_pos]  # repeat current state
             # if the action has ended, next token must be padding
             next_logit_scores[ended_actions] = 0  # P(pad after end) = 1
