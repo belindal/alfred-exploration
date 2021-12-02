@@ -32,7 +32,6 @@ class EvalTask(Eval):
                 break
 
             task = task_queue.get()
-
             try:
                 traj = model.load_task_json(task)
                 r_idx = task['repeat_idx']
@@ -61,6 +60,11 @@ class EvalTask(Eval):
         # setup scene
         reward_type = 'dense'
         cls.setup_scene(env, traj_data, r_idx, args, reward_type=reward_type)
+
+        # get expert actions for everything but the last subgoal
+        num_subgoals = len(traj_data['turk_annotations']['anns'][r_idx]['high_descs'])
+        # (i wonder if just one subgoal is too easy?)
+        expert_init_actions = [a['discrete_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] <= num_subgoals - 2]
 
         # extract language features
         feat = model.featurize([traj_data])
@@ -118,6 +122,12 @@ class EvalTask(Eval):
                     mask = None
                 else:
                     mask = object_features[0]["masks"][0][0]
+
+            if t < len(expert_init_actions) and args.force_last_subgoal:
+                action_dict = expert_init_actions[t]
+                action = action_dict['action']
+                compressed_mask = action_dict['args']['mask'] if 'mask' in action_dict['args'] else None
+                mask = env.decompress_mask(compressed_mask) if compressed_mask is not None else None
 
             #if args.debug:
             #    plot_mask(feature["masks"][0][0], 'mask.png')
