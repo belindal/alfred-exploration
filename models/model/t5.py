@@ -7,6 +7,7 @@ from transformers import AutoConfig, AutoModelForSeq2SeqLM, T5ForConditionalGene
 import torch.nn.functional as F
 from models.nn.vnn import ResnetVisualEncoder
 import regex as re
+import random
 import gen
 
 
@@ -135,18 +136,25 @@ class GoalConditionedTransformer(nn.Module):
                 decoder_inputs_embeds=fused_action_image_rep, decoder_attention_mask=action_sequence_mask,
             )
             # TODO(sahit): annotations
-            token_list= torch.Tensor([self.tokenizer.encode(alfredobject) for alfredobject in object_list]).flatten().to(self.device)
-            token_mask = torch.zeros(self.tokenizer.vocab_size()).to(self.device)
-            token_mask[token_list] = 1
-            breakpoint()
+            token_list = self.tokenizer(object_list, add_special_tokens=False, return_tensors='pt',padding=True)['input_ids'].flatten().to(self.device)
+            action_token_list = self.tokenizer(object_list[:13], add_special_tokens=False, return_tensors='pt',padding=True)['input_ids'].flatten().to(self.device)
+            #print(self.tokenizer.decode(token_list))
+            token_mask = torch.zeros(bs, self.model.config.vocab_size, dtype=torch.bool).to(self.device)
+            action_token_mask = torch.zeros(bs, self.model.config.vocab_size, dtype=torch.bool).to(self.device)
+            action_token_mask[:,action_token_list] = True
+            token_mask[:,token_list] = True
 
             if unroll_idx == 0:
-                next_logit_score_dist, next_logits_dist = model_output.logits[torch.arange(bs),last_token_pos][token_mask].topk(topk, dim=-1)
+                next_logit_score_dist, next_logits_dist = model_output.logits[0][last_token_pos][action_token_mask].topk(topk, dim=-1)
                 scores_dist = torch.distributions.Categorical(logits = next_logit_score_dist)
                 sampled_action_idx = scores_dist.sample()
-                next_logit_scores, next_logits = next_logit_score_dist[torch.arange(bs), sampled_action_idx], next_logits_dist[torch.arange(bs),sampled_action_idx]
+                next_logit_scores, next_logits = next_logit_score_dist[sampled_action_idx], next_logits_dist[sampled_action_idx]
+                next_logits = action_token_mask.nonzero()[:,1][next_logits]
             else:
                 next_logit_scores, next_logits = model_output.logits[torch.arange(bs),last_token_pos][token_mask].max(-1)
+                next_logits = token_mask.nonzero()[:,1][next_logits]
+            next_logits = next_logits.unsqueeze(0)
+            next_logit_scores = next_logit_scores.unsqueeze(0)
             next_image = image_sequence[torch.arange(bs),last_token_pos]  # repeat current state
             # if the action has ended, next token must be padding
             next_logit_scores[ended_actions] = 0  # P(pad after end) = 1
@@ -272,8 +280,9 @@ class GoalConditionedTransformer(nn.Module):
             try:
                 obj_idx = obj_label2feature_idx[snake_to_camel(obj_name)]
             except Exception as e:
-                print("trying to interact with an object not in the scene")
-                breakpoint()
+                print(f"trying to interact with: {obj_name} not in the scene")
+                obj_idx = 0
+                #breakpoint()
             obj_masks.append(image_obj_features['masks'][obj_idx][0])
         return m
 
@@ -283,7 +292,9 @@ class GoalConditionedTransformer(nn.Module):
         action = self.tokenizer.decode(m_out, skip_special_tokens=True).split(",")[0].strip()
         # convert BACK to API action!!!
         api_action = snake_to_camel(action.split(':')[0].strip())
-        assert api_action in API_ACTIONS, f"{api_action} is not part of {API_ACTIONS}!"
+        if api_action not in API_ACTIONS:
+            api_action =  API_ACTIONS[4]
+        assert api_action in API_ACTIONS, f"{action} is not part of {API_ACTIONS}!"
         mask = (
             self.generate_action_mask(action, curr_image, object_features)
             if self.has_interaction(action)
