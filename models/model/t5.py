@@ -223,6 +223,9 @@ class GoalConditionedTransformer(nn.Module):
         # # next action embeds
         # # (n_actions, n_tokens_in_actions, word_embed_dim)
         # all_action_embeds = self.model.decoder.embed_tokens(all_action_tokens['input_ids'])
+        batch_all_next_actions = []
+        batch_all_next_actions_masks = []
+        batch_all_next_actions_imgs = []
 
         for i in range(bs):
             next_token_pos = action_sequence_mask[i].nonzero().max() + 1
@@ -243,6 +246,8 @@ class GoalConditionedTransformer(nn.Module):
             all_next_actions_w_seq[:,next_token_pos:next_token_pos+n_tokens_in_actions] = all_action_tokens['input_ids']
             all_next_actions_w_seq_mask = all_next_actions_w_seq_mask.unsqueeze(0).repeat(n_actions,1)
             all_next_actions_w_seq_mask[:,next_token_pos:next_token_pos+n_tokens_in_actions] = all_action_tokens['attention_mask']
+            batch_all_next_actions.append(all_next_actions_w_seq)
+            batch_all_next_actions_masks.append(all_next_actions_w_seq_mask)
 
             """
             make new image sequence
@@ -253,9 +258,10 @@ class GoalConditionedTransformer(nn.Module):
             if image_sequence[i].size(0) < n_tokens_in_actions + next_token_pos:
                 # (n_tokens+n_tokens_in_actions, image_dim)
                 all_next_action_imgs = F.pad(image_sequence[i], pad=(0,0,0,n_tokens_in_actions+next_token_pos-image_sequence[i].size(0)), value=0.0)
-            # (n_actions, image_dim) -> (n_actions, n_tokens_in_actions, image_dim)
+            # (n_actions, image_dim) -> (n_actions, n_tokens+n_tokens_in_actions, image_dim)
             all_next_action_imgs = all_next_action_imgs.unsqueeze(0).repeat(n_actions,1,1)
             all_next_action_imgs[:,next_token_pos:next_token_pos+n_tokens_in_actions,:] = all_next_action_imgs[:,next_token_pos-1,:].unsqueeze(1).repeat(1,n_tokens_in_actions,1)
+            batch_all_next_actions_imgs.append(all_next_action_imgs)
 
             # (n_actions, n_tokens_in_actions, word_embed_dim + image_dim) -> (n_actions, n_tokens_in_actions, linear_out_dim)
             all_next_actions_w_seq_embed = self.model.decoder.embed_tokens(all_next_actions_w_seq)
@@ -275,8 +281,15 @@ class GoalConditionedTransformer(nn.Module):
             # (n_actions, n_tokens_in_actions) -> (n_actions)
             action_scores = action_scores.view(n_actions,-1).sum(-1)
             batch_action_scores.append(action_scores)
+        # (bs, n_actions)
         batch_action_scores = torch.stack(batch_action_scores, dim=0)
-        return batch_action_scores
+        # (bs, n_actions, n_tokens+n_tokens_in_actions)
+        batch_all_next_actions = torch.stack(batch_all_next_actions, dim=0)
+        # (bs, n_actions, n_tokens+n_tokens_in_actions)
+        batch_all_next_actions_masks = torch.stack(batch_all_next_actions_masks, dim=0)
+        # (bs, n_actions, n_tokens+n_tokens_in_actions, image_dim)
+        batch_all_next_actions_imgs = torch.stack(batch_all_next_actions_imgs, dim=0)
+        return batch_action_scores, {'actions': batch_all_next_actions, 'actions_masks': batch_all_next_actions_masks, 'states': batch_all_next_actions_imgs}
 
     @classmethod
     def load(cls, args, fsave):

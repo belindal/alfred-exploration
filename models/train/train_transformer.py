@@ -444,7 +444,7 @@ if __name__ == '__main__':
                 i_mask=feat['input_goals']['attention_mask'],
                 o_mask=feat['action_seq_past']['attention_mask'],
             )['actions']
-            all_action_scores = model.score_all_continuations(
+            all_action_scores, new_action_states = model.score_all_continuations(
                 goal_representation=feat['input_goals']['input_ids'],
                 action_seq_past=feat['action_seq_past']['input_ids'],
                 image_seq_w_curr=feat['state_seq_w_curr'],
