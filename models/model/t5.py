@@ -310,10 +310,10 @@ class GoalConditionedTransformer(nn.Module):
         # TODO: Maybe cast all actions to be within the 13 valid tokens.
         # Also this is a good place to add in the exploration
         action = self.tokenizer.decode(m_out, skip_special_tokens=True).split(",")[0].strip()
-        if "[subgoal]" in action:
-            action = "[subgoal]"
         if action == "stop>>":
             action = "<<stop>>"
+        if action.startswith("[subgoal]"):
+            action = "[subgoal]"
         # convert BACK to API action!!!
         api_action = snake_to_camel(action.split(':')[0].strip())
         if api_action not in API_ACTIONS:

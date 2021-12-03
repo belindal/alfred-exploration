@@ -91,13 +91,14 @@ class ALFREDDataloader(DataLoader):
                 api_actions_by_subgoal = self.get_api_actions_by_subgoals(ex, all_subgoals)
                 for subgoal_idx, subgoal in enumerate(all_subgoals):
                     curr_subgoal_action_idxs = []
+
                     # in terms of the action vocabulary
                     # subgoal_actions = self.vocab['action_high'].index2word(ex['num']['action_high'][subgoal_idx]['action'])
                     for action_idx, action in enumerate(ex['num']['action_low'][subgoal_idx]):
                         action_low = self.vocab['action_low'].index2word(action['action'])
-                        # if "MoveAhead" in action_low:
-                        #     # Downsample moveahead
-                        #     if random.random() > 0.25: continue
+                        if "MoveAhead" in action_low:
+                            # Downsample moveahead
+                            if random.random() > 0.25: continue
                         action_nl = action_low
                         if action_low == '<<stop>>':
                             # special case where api_actions_by_subgoal[subgoal_idx] will be empty
@@ -142,6 +143,22 @@ class ALFREDDataloader(DataLoader):
                         }
                         assert len(new_ex['state_seq']) == len(new_ex['action_seq']) == len(new_ex['action_mask_seq']) == len(new_ex['action_args_seq']) == new_ex['curr_subgoal_action_idxs'][-1] + 1
                         new_dataset.append(new_ex)
+
+                    # add token for end of subgoal
+                    if self.curr_subgoal_only and subgoal_idx != len(all_subgoals) - 1:
+                        if len(curr_subgoal_action_idxs) == 0:
+                            # skip this subgoal
+                            continue
+                        new_ex = {
+                            "curr_subgoal": subgoal,
+                            "curr_subgoal_action_idxs": [action_idx for action_idx in curr_subgoal_action_idxs] + [curr_subgoal_action_idxs[-1] + 1],
+                            "state_seq": torch.cat([all_frames[:frame_idx], all_frames[frame_idx-1].unsqueeze(0)], dim=0),
+                            "action_seq": [a for a in action_sequence] + ["[subgoal]"],
+                            "action_mask_seq": [am for am in action_mask_sequence] + [action_mask_sequence[-1]],
+                            "action_args_seq": [arg for arg in action_args_sequence] + [{}],
+                        }
+                        new_dataset.append(new_ex)
+
                     prev_subgoals += subgoal
         else:
             new_dataset = []
@@ -262,7 +279,7 @@ class ALFREDDataloader(DataLoader):
             if type(feat[key][0]) == str:
                 feat_key_lens = [len(item) for item in feat[key]]
                 if max(feat_key_lens) == 0:
-                    feat[key] = {'input_ids': torch.Tensor(len(batch),0).to(device), 'attention_mask': torch.Tensor(len(batch),0).to(device)}
+                    feat[key] = {'input_ids': torch.Tensor(len(batch),0).to(device).long(), 'attention_mask': torch.Tensor(len(batch),0).to(device).long()}
                 else:
                     feat[key] = self.tokenizer(feat[key], return_tensors='pt', padding=True, add_special_tokens=(False if 'action' in key else True)).to(device)
             elif type(feat[key][0]) == torch.Tensor:
@@ -278,6 +295,8 @@ class ALFREDDataloader(DataLoader):
         for idx, pred in enumerate(preds):
             pred = self.tokenizer.decode(pred, skip_special_tokens=True)
             pred = pred.split(',')[0].strip()  # segment out first generated action
+            if pred.startswith("[subgoal]"):
+                pred = "[subgoal]"
             gt = self.tokenizer.decode(data['action_curr']['input_ids'][idx], skip_special_tokens=True).strip(',')
             output_dicts.append({
                 'pred': pred,
