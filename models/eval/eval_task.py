@@ -90,7 +90,6 @@ class EvalTask(Eval):
             curr_image = Image.fromarray(np.uint8(env.last_event.frame))
             curr_state = resnet.featurize([curr_image], batch=1)
             curr_state = vis_encoder(curr_state.cpu()).unsqueeze(0)
-            feat['all_states'] = torch.cat([state_history.cpu(), curr_state], dim=1)
 
             object_features = cls.get_visual_features(env, image_loader, region_detector, args, device)
             seen_objects = [unCamelSnakeCase(CLASSES[idx]) for idx in object_features[0]["class_labels"]]
@@ -104,6 +103,7 @@ class EvalTask(Eval):
                 mask = env.decompress_mask(compressed_mask) if compressed_mask is not None else None
                 print("expert action: ", action)
             else:
+                feat['all_states'] = torch.cat([state_history.cpu(), curr_state], dim=1)
                 m_out = model.test_generate(
                     feat["goal_representation"]["input_ids"].to(device),
                     feat['actions']['input_ids'].to(device),
