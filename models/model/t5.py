@@ -2,6 +2,7 @@ import os
 import torch
 import numpy as np
 import json
+import matplotlib.pyplot as plt
 from Levenshtein import distance as lev
 from torch import nn
 from transformers import AutoConfig, AutoModelForSeq2SeqLM, T5ForConditionalGeneration, T5Tokenizer
@@ -284,10 +285,13 @@ class GoalConditionedTransformer(nn.Module):
         m = np.zeros((300, 300))
         # extract object(s) from action
         object_names = action.split(':')[-1].strip()
-        object_names = object_names.split(' in ')
+        object_names = [object_names.split(' in ')[-1]] # only want the destination object
         if len(object_names) == 0: return None
         # ["table", "chair"]
-        obj_label2feature_idx = {CLASSES[label]: i for i, label in enumerate(image_obj_features["class_labels"])}
+        obj_label2feature_idx = dict()
+        for i, label in enumerate(image_obj_features["class_labels"]):
+            if CLASSES[label] not in obj_label2feature_idx:
+                obj_label2feature_idx[CLASSES[label]] = i # TODO consider more aggressive probability filtering
         obj_masks = []
         for obj_name in object_names:
             # TODO(sahit): switch from t/e to defaultdict
@@ -304,6 +308,7 @@ class GoalConditionedTransformer(nn.Module):
                 print(f"replacing with {obj_name_similar}")
                 obj_idx = minimizing_idx
             obj_masks.append(image_obj_features['masks'][obj_idx][0])
+        m = obj_masks[0]
         return m
 
     def decode_prediction(self, m_out, curr_image, object_features):
@@ -322,7 +327,7 @@ class GoalConditionedTransformer(nn.Module):
         assert api_action in API_ACTIONS, f"{action} is not part of {API_ACTIONS}!"
         mask = (
             self.generate_action_mask(action, curr_image, object_features)
-            if self.has_interaction(action)
+            if self.has_interaction(api_action)
             else None
         )
         return {
@@ -335,7 +340,9 @@ class GoalConditionedTransformer(nn.Module):
         """
         check if low-level action is interactive
         """
-        return ':' in action
+        # TODO(sahit): go back to O.G has_interaction? messing w this fn is wrong
+        return action in ["PickupObject", "ToggleObject", "ToggleObjectOn", "ToggleObjectOff",
+                "PutObject", "SliceObject", "OpenObject", "CloseObject"]
         # non_interact_actions = [
         #     "MoveAhead",
         #     "Rotate",

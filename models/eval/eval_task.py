@@ -27,11 +27,11 @@ class EvalTask(Eval):
         '''
         # start THOR
         env = ThorEnv()
-
+        runs = 0
         while True:
+            runs += 1
             if task_queue.qsize() == 0:
                 break
-
             task = task_queue.get()
             try:
                 traj = model.load_task_json(task)
@@ -115,7 +115,6 @@ class EvalTask(Eval):
                     o_mask=feat['actions']['attention_mask'].to(device),
                     object_list = API_ACTIONS_NATURALIZED + [",", ":", "in"] + seen_objects
                 )
-                #print("ground truth action: ", gt_actions[t]['action'])
                 feat['actions']['input_ids'] = m_out['action_seq']
                 feat['actions']['attention_mask'] = m_out['action_seq_mask']
                 state_history = m_out['states_seq']
@@ -129,6 +128,7 @@ class EvalTask(Eval):
                     print("\tpredicted [subgoal]")
                     instr_idx += 1
                     feat = model.featurize([traj_data], instr_idx=instr_idx)
+                    continue
 
                 # get action and mask
                 action, mask = m_pred['action_low'], m_pred['action_low_mask']
@@ -154,6 +154,8 @@ class EvalTask(Eval):
             # use predicted action and mask (if available) to interact with the env
             t_success, _, _, err, _ = env.va_interact(action, interact_mask=mask, smooth_nav=args.smooth_nav, debug=args.debug)
             if not t_success:
+                print("err: ", err)
+                #breakpoint()
                 fails += 1
                 if fails >= args.max_fails:
                     print("Interact API failed %d times" % fails + "; latest error '%s'" % err)
