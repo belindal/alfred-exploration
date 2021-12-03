@@ -53,6 +53,7 @@ python3 models/eval/eval_seq2seq.py --model_path /home/sahit/alfred-exploration/
 ## Additional required setup:
 - install allennlp
 - install pytorch-lightning
+- install python-Levenshtein
 
 - Add MaskRCNN weights:
 ```bash

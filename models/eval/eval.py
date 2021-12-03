@@ -15,6 +15,8 @@ from scripts.geometry_utils import calculate_angles
 class Eval(object):
 
     # tokens
+    SUBGOAL_STOP_TOKEN = "[subgoal]"
+    NEW_STOP_TOKEN = "<<stop>>"
     STOP_TOKEN = "[stop]"
     SEQ_TOKEN = "<<seg>>"
     TERMINAL_TOKENS = [STOP_TOKEN, SEQ_TOKEN]

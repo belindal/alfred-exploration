@@ -54,6 +54,7 @@ class EvalTask(Eval):
         # reset model
         #model.reset()
         device = torch.device("cpu")
+        instr_idx = -args.force_last_k_subgoals
         if vars(args)["gpu"]:
             model = model.to('cuda')
             device = torch.device("cuda")
@@ -66,9 +67,11 @@ class EvalTask(Eval):
         num_subgoals = len(traj_data['turk_annotations']['anns'][r_idx]['high_descs'])
         # (i wonder if just one subgoal is too easy?)
         expert_init_actions = [a['discrete_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] <= num_subgoals - 1 - args.force_last_k_subgoals]
+        gt_actions = [a['discrete_action'] for a in traj_data['plan']['low_actions']]
+
 
         # extract language features
-        feat = model.featurize([traj_data], instr_idx=-1)
+        feat = model.featurize([traj_data], instr_idx=instr_idx)
 
         # goal instr
         goal_instr = traj_data['turk_annotations']['anns'][r_idx]['task_desc']
@@ -110,17 +113,22 @@ class EvalTask(Eval):
                     feat["all_states"].to(device),
                     i_mask=feat["goal_representation"]["attention_mask"].to(device),
                     o_mask=feat['actions']['attention_mask'].to(device),
-                    object_list = API_ACTIONS_NATURALIZED + seen_objects + [",", ":"]
+                    object_list = API_ACTIONS_NATURALIZED + [",", ":", "in"] + seen_objects
                 )
+                #print("ground truth action: ", gt_actions[t]['action'])
                 feat['actions']['input_ids'] = m_out['action_seq']
                 feat['actions']['attention_mask'] = m_out['action_seq_mask']
                 state_history = m_out['states_seq']
                 m_pred = model.decode_prediction(m_out['actions'][0], curr_image, object_features[0])
                 #print(m_pred)
                 # check if <<stop>> was predicted
-                if m_pred['action_low'] == cls.STOP_TOKEN:
+                if m_pred['action_low'] == cls.STOP_TOKEN or m_pred['action_low'] == cls.NEW_STOP_TOKEN:
                     print("\tpredicted STOP")
                     break
+                elif m_pred['action_low'] == cls.SUBGOAL_STOP_TOKEN:
+                    print("\tpredicted [subgoal]")
+                    instr_idx += 1
+                    feat = model.featurize([traj_data], instr_idx=instr_idx)
 
                 # get action and mask
                 action, mask = m_pred['action_low'], m_pred['action_low_mask']
