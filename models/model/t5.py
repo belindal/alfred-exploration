@@ -3,7 +3,6 @@ import torch
 import numpy as np
 import json
 import matplotlib.pyplot as plt
-from Levenshtein import distance as lev
 from torch import nn
 from transformers import AutoConfig, AutoModelForSeq2SeqLM, T5ForConditionalGeneration, T5Tokenizer
 import torch.nn.functional as F
@@ -300,7 +299,6 @@ class GoalConditionedTransformer(nn.Module):
             except Exception as e:
                 print(f"trying to interact with: {obj_name} not in the scene")
                 list_of_objs = image_obj_features['class_labels']
-                #lev_distances = [lev(snake_to_camel(obj_name), scene_elem) for scene_elem in list_of_objs]
                 distances = [snake_to_camel(obj_name) in CLASSES[scene_elem] for scene_elem in list_of_objs]
                 distances = [-1*int(x) for x in distances]
                 minimizing_idx = np.argmin(distances)

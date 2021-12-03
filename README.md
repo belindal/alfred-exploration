@@ -26,6 +26,16 @@ $ cd $ALFRED_ROOT/data
 $ sh download_data.sh json_feat
 ```
 
+Additionally, our project has a few more associated setup steps to load the MaskRCNN model finetuned on ALFRED in the MOCA paper. 
+```bash
+pip install allennlp
+pip install pytorch-lightning
+
+mkdir -p storage/models/vision/moca_maskrcnn;
+wget https://alfred-colorswap.s3.us-east-2.amazonaws.com/weight_maskrcnn.pt -O storage/models/vision/moca_maskrcnn/weight_maskrcnn.pt; 
+```
+
+
 
 ## Training the transformer
 ```bash
@@ -43,20 +53,11 @@ The main files that I added for the Transformer training are `models/train/train
 
 ## Evaluating the Transformer
 ```bash
-python3 models/eval/eval_seq2seq.py --model_path /home/sahit/alfred-exploration/models/pretrained/transformer_ep0_step24000_new.pth --eval_split valid_seen --data /home/sahit/alfred-exploration/data/json_feat_2.1.0 --model models.model.t5 --gpu --num_threads 1
+python3 models/eval/eval_seq2seq.py --model_path /home/sahit/alfred-exploration/models/subgoals/transformer_new_ep0_step80000.pth --eval_split valid_seen --data /home/sahit/alfred-exploration/data/json_feat_2.1.0 --model models.model.t5 --gpu --num_threads 1 --max_steps 100
 ```
 
-- If you want to follow expert demonstrations until the last subgoal, add the flag `--force_last_subgoal`
+- If you want to follow expert demonstrations until the last k subgoals, add the flag `--force_last_k_subgoals` with an int k
 - When this starts working for real, increase num_threads from 1 to e.g 3
 
 
-## Additional required setup:
-- install allennlp
-- install pytorch-lightning
-- install python-Levenshtein
 
-- Add MaskRCNN weights:
-```bash
-mkdir -p storage/models/vision/moca_maskrcnn;
-wget https://alfred-colorswap.s3.us-east-2.amazonaws.com/weight_maskrcnn.pt -O storage/models/vision/moca_maskrcnn/weight_maskrcnn.pt; 
-```
