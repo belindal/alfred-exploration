@@ -21,7 +21,7 @@ import numpy as np
 from gen.utils.image_util import decompress_mask
 from torch.nn.utils.rnn import pad_sequence
 from transformers import AdamW
-from models.model.t5 import GoalConditionedTransformer, unCamelSnakeCase
+from models.model.t5 import GoalConditionedTransformer, unCamelSnakeCase, API_ACTIONS_NATURALIZED
 from tqdm import tqdm
 import itertools as it
 import random
@@ -444,13 +444,14 @@ if __name__ == '__main__':
                 i_mask=feat['input_goals']['attention_mask'],
                 o_mask=feat['action_seq_past']['attention_mask'],
             )['actions']
-            # all_action_scores = model.score_all_actions(
-            #     goal_representation=feat['input_goals']['input_ids'],
-            #     action_seq_past=feat['action_seq_past']['input_ids'],
-            #     image_seq_w_curr=feat['state_seq_w_curr'],
-            #     i_mask=feat['input_goals']['attention_mask'],
-            #     o_mask=feat['action_seq_past']['attention_mask'],
-            # )
+            all_action_scores = model.score_all_continuations(
+                goal_representation=feat['input_goals']['input_ids'],
+                action_seq_past=feat['action_seq_past']['input_ids'],
+                image_seq_w_curr=feat['state_seq_w_curr'],
+                i_mask=feat['input_goals']['attention_mask'],
+                o_mask=feat['action_seq_past']['attention_mask'],
+                continuations=[action + "," for action in API_ACTIONS_NATURALIZED],
+            )
             metrics = dl_splits['valid_seen'].compute_metrics(outputs, feat)
             acc = metrics['accuracy']
             outputs = metrics['output_dicts']

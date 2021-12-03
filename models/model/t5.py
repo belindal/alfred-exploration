@@ -204,7 +204,9 @@ class GoalConditionedTransformer(nn.Module):
         scores = -torch.stack(scores, dim=1).sum(-1)
         return {'actions': next_actions, 'action_seq': action_sequence, 'action_seq_mask': action_sequence_mask, 'states_seq': image_sequence, 'log_probs': scores}
 
-    def score_all_actions(self, goal_representation, action_seq_past, image_seq_w_curr, i_mask, o_mask):
+    def score_all_continuations(self, goal_representation, action_seq_past, image_seq_w_curr, i_mask, o_mask, continuations: list):
+        bs = goal_representation.size(0)
+
         action_sequence, action_sequence_mask, image_sequence, fused_action_image_rep = self.setup_inputs_for_generate(
             goal_representation, action_seq_past, image_seq_w_curr, i_mask=i_mask, o_mask=o_mask,
         )
@@ -212,24 +214,68 @@ class GoalConditionedTransformer(nn.Module):
         encoder_outputs = self.model.encoder(
             input_ids=goal_representation, attention_mask=i_mask,
         )
-        all_action_tokens = self.tokenizer(API_ACTIONS_NATURALIZED, return_tensors='pt', padding=True, add_special_tokens=False).to(self.device)
+        # (n_actions, n_tokens)
+        all_action_tokens = self.tokenizer(continuations, return_tensors='pt', padding=True, add_special_tokens=False).to(self.device)
 
         bs = goal_representation.size(0)
-        last_token_pos = torch.stack([
-            (action_sequence[idx] == 6).nonzero().max() if (action_sequence[idx] == 6).any() else torch.tensor(0).to(self.device) for idx in range(bs)
-        ])
-        breakpoint()
-        action_scores = []
-        # iterate across tokens of each action
-        for tok_idx in range(all_action_tokens['input_ids'].size(1)):
+        batch_action_scores = []
+        # # next action embeds
+        # # (n_actions, n_tokens_in_actions, word_embed_dim)
+        # all_action_embeds = self.model.decoder.embed_tokens(all_action_tokens['input_ids'])
+
+        for i in range(bs):
+            next_token_pos = action_sequence_mask[i].nonzero().max() + 1
+            n_actions, n_tokens_in_actions = all_action_tokens['input_ids'].size(0), all_action_tokens['input_ids'].size(1)
+            # (n_tokens)
+            all_next_actions_w_seq = action_sequence[i].clone()
+            all_next_actions_w_seq_mask = action_sequence_mask[i].clone()
+            """
+            make new action sequence
+            """
+            # add sequence to end
+            if action_sequence[i].size(0) < n_tokens_in_actions + next_token_pos:
+                # (n_tokens+n_tokens_in_actions)
+                all_next_actions_w_seq = F.pad(action_sequence[i], pad=(0,n_tokens_in_actions+next_token_pos-action_sequence[i].size(0)), value=self.tokenizer.pad_token_id)
+                all_next_actions_w_seq_mask = F.pad(action_sequence_mask[i], pad=(0,n_tokens_in_actions+next_token_pos-action_sequence_mask[i].size(0)), value=0)
+            # (n_actions, n_tokens+n_tokens_in_actions)
+            all_next_actions_w_seq = all_next_actions_w_seq.unsqueeze(0).repeat(n_actions,1)
+            all_next_actions_w_seq[:,next_token_pos:next_token_pos+n_tokens_in_actions] = all_action_tokens['input_ids']
+            all_next_actions_w_seq_mask = all_next_actions_w_seq_mask.unsqueeze(0).repeat(n_actions,1)
+            all_next_actions_w_seq_mask[:,next_token_pos:next_token_pos+n_tokens_in_actions] = all_action_tokens['attention_mask']
+
+            """
+            make new image sequence
+            """
+            # (n_tokens, image_dim)
+            all_next_action_imgs = image_sequence[i].clone()
+            # repeat last state
+            if image_sequence[i].size(0) < n_tokens_in_actions + next_token_pos:
+                # (n_tokens+n_tokens_in_actions, image_dim)
+                all_next_action_imgs = F.pad(image_sequence[i], pad=(0,0,0,n_tokens_in_actions+next_token_pos-image_sequence[i].size(0)), value=0.0)
+            # (n_actions, image_dim) -> (n_actions, n_tokens_in_actions, image_dim)
+            all_next_action_imgs = all_next_action_imgs.unsqueeze(0).repeat(n_actions,1,1)
+            all_next_action_imgs[:,next_token_pos:next_token_pos+n_tokens_in_actions,:] = all_next_action_imgs[:,next_token_pos-1,:].unsqueeze(1).repeat(1,n_tokens_in_actions,1)
+
+            # (n_actions, n_tokens_in_actions, word_embed_dim + image_dim) -> (n_actions, n_tokens_in_actions, linear_out_dim)
+            all_next_actions_w_seq_embed = self.model.decoder.embed_tokens(all_next_actions_w_seq)
+            fused_next_action_image_rep = self.fusion_module(torch.cat([all_next_actions_w_seq_embed, all_next_action_imgs], dim=-1))
+            next_action_pred = all_next_actions_w_seq[:,1:].clone()
+            next_action_pred[next_action_pred[:, :] == self.tokenizer.pad_token_id] = -100
+            fused_next_action_image_rep_inputs = fused_next_action_image_rep[:,:-1,:]
+
             model_outputs = self.model(
-                encoder_outputs=encoder_outputs, decoder_inputs_embeds=fused_action_image_rep, decoder_attention_mask=action_sequence_mask,
+                encoder_outputs=(encoder_outputs.last_hidden_state[i].unsqueeze(0).repeat(n_actions,1,1),),
+                decoder_inputs_embeds=fused_next_action_image_rep_inputs, decoder_attention_mask=all_next_actions_w_seq_mask[:,:-1],
+                labels=next_action_pred,
             )
-            # (bs, seqlen, vocab_size) -> (bs, vocab_size)
-            last_tok_logits = model_outputs.logits[torch.arange(bs), last_token_pos]
-            last_tok_probs = torch.log_softmax(last_tok_logits, dim=-1)
-            # (bs, vocab_size) -> (bs, # actions, vocab_size)
-            batch_action_probs = last_tok_probs[:, all_action_tokens['input_ids'][:,tok_idx]]
+            loss_fct = nn.CrossEntropyLoss(ignore_index=-100, reduction='none')
+            # (n_actions x n_tokens_in_actions)
+            action_scores = -loss_fct(model_outputs.logits.view(-1, model_outputs.logits.size(-1)), next_action_pred.view(-1))
+            # (n_actions, n_tokens_in_actions) -> (n_actions)
+            action_scores = action_scores.view(n_actions,-1).sum(-1)
+            batch_action_scores.append(action_scores)
+        batch_action_scores = torch.stack(batch_action_scores, dim=0)
+        return batch_action_scores
 
     @classmethod
     def load(cls, args, fsave):
