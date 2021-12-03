@@ -249,35 +249,36 @@ class GoalConditionedTransformer(nn.Module):
             data = json.load(f)
         return data
 
-    def featurize(self, batch):
+    def featurize(self, batch, instr_idx = None):
+        """
+        if instr_idx is None we use all of instructions and also the goal
+        if instr_idx is not None we condition the transformer on
+        instructions[instr_idx - 1:]. e.g. if instr_idx=-1 thena we condition on the
+        last subgoal and <<stop>>. note we do not condition on the goal itself.
+        """
         feat = {
-            # 'all_states': [],
-            # 'actions': [],
-            # 'actions_mask': [],
             "goal_representation": [],
         }
         for item in batch:
-            # dict_keys(['ann', 'images', 'num', 'pddl_params', 'plan', 'repeat_idx', 'root', 'scene', 'split', 'task_id', 'task_type', 'turk_annotations'])
-            feat['goal_representation'].append(
-                ''.join([g.rstrip() for g in item['ann']['goal']]).replace('<<goal>>', ' [goal]').replace('<<stop>>', ' [stop]').replace('  ', ' ').strip()
-            )
-            # TODO: trim <<goal>> and <<stop>> from goal rep?
-            for instr in item['ann']['instr']:
+            instructions = item['ann']['instr']
+            if instr_idx is None:
+                feat['goal_representation'].append(
+                    ''.join([g.rstrip() for g in item['ann']['goal']]).replace('<<goal>>', ' [goal]').replace('<<stop>>', ' [stop]').replace('  ', ' ').strip()
+                )
+            else:
+                feat['goal_representation'].append('')
+                instructions = item['ann']['instr'][instr_idx - 1:]
+            for instr in instructions:
                 feat['goal_representation'][-1] += (
                     ''.join([i.rstrip() for i in instr])
                 ).replace('<<goal>>', ' [goal]').replace('<<stop>>', ' [stop]').replace('  ', ' ').strip()
+        print("goal representation: ", feat['goal_representation'])
         feat['goal_representation'] = self.tokenizer(feat['goal_representation'], return_tensors='pt', padding=True).to(self.device)
         feat['actions'] = {
             'input_ids': torch.Tensor(len(batch),0).long().to(self.device),
             'attention_mask': torch.Tensor(len(batch),0).long().to(self.device),
         }
         return feat
-
-    @classmethod
-    def generate_naive_action_mask(cls, _action, _curr_image, _curr_image_features):
-        m = np.zeros((300, 300))
-        m[140:160, 140:160] = 1
-        return m
 
     @classmethod
     def generate_action_mask(cls, action, curr_image, image_obj_features):
