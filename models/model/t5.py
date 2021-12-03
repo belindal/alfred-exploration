@@ -2,6 +2,8 @@ import os
 import torch
 import numpy as np
 import json
+import matplotlib.pyplot as plt
+from Levenshtein import distance as lev
 from torch import nn
 from transformers import AutoConfig, AutoModelForSeq2SeqLM, T5ForConditionalGeneration, T5Tokenizer
 import torch.nn.functional as F
@@ -35,7 +37,7 @@ def snake_to_camel(action_str):
     return action_str[0].upper() + action_str[1:]
 
 vis_encoder = ResnetVisualEncoder(dframe=512)
-API_ACTIONS = ["PickupObject", "ToggleObject", "LookDown_15", "MoveAhead_25", "RotateLeft_90", "LookUp_15", "RotateRight_90", "ToggleObjectOn", "ToggleObjectOff", "PutObject", "SliceObject", "OpenObject", "CloseObject"]
+API_ACTIONS = ["PickupObject", "ToggleObject", "LookDown_15", "MoveAhead_25", "RotateLeft_90", "LookUp_15", "RotateRight_90", "ToggleObjectOn", "ToggleObjectOff", "PutObject", "SliceObject", "OpenObject", "CloseObject", '[subgoal]', '<<stop>>']
 API_ACTIONS_NATURALIZED = [unCamelSnakeCase(action) for action in API_ACTIONS]
 CLASSES = ['0'] + gen.constants.OBJECTS + ['AppleSliced', 'ShowerCurtain', 'TomatoSliced', 'LettuceSliced', 'Lamp',
                                         'ShowerHead', 'EggCracked', 'BreadSliced', 'PotatoSliced', 'Faucet']
@@ -139,30 +141,29 @@ class GoalConditionedTransformer(nn.Module):
                 assert bs == 1
                 # TODO(sahit): annotations
                 token_list = self.tokenizer(object_list, add_special_tokens=False, return_tensors='pt',padding=True)['input_ids'].flatten().to(self.device)
-                action_token_list = self.tokenizer(object_list[:13], add_special_tokens=False, return_tensors='pt',padding=True)['input_ids'].flatten().to(self.device)
+                #action_token_list = self.tokenizer(object_list[:len(API_ACTIONS_NATURALIZED) + 2], add_special_tokens=False, return_tensors='pt',padding=True)['input_ids'].flatten().to(self.device)
                 #print(self.tokenizer.decode(token_list))
                 token_mask = torch.zeros(bs, self.model.config.vocab_size, dtype=torch.bool).to(self.device)
-                action_token_mask = torch.zeros(bs, self.model.config.vocab_size, dtype=torch.bool).to(self.device)
-                action_token_mask[:,action_token_list] = True
+                #action_token_mask = torch.zeros(bs, self.model.config.vocab_size, dtype=torch.bool).to(self.device)
+                #action_token_mask[:,action_token_list] = True
                 token_mask[:,token_list] = True
             else:
-                action_token_mask = None
+                #action_token_mask = None
                 token_mask = None
-
             if unroll_idx == 0:
                 n_cands_to_sample_from = topk
             else:
                 n_cands_to_sample_from = 1
-            if action_token_mask is not None:
-                next_logit_score_dist, next_logits_dist = model_output.logits[0][last_token_pos][action_token_mask].topk(n_cands_to_sample_from, dim=-1)
+            if token_mask is not None:
+                next_logit_score_dist, next_logits_dist = model_output.logits[0][last_token_pos][token_mask].topk(n_cands_to_sample_from, dim=-1)
             else:
                 next_logit_score_dist, next_logits_dist = model_output.logits[torch.arange(bs),last_token_pos].topk(n_cands_to_sample_from, dim=-1)
             scores_dist = torch.distributions.Categorical(logits = next_logit_score_dist)
             sampled_action_idx = scores_dist.sample()
-            if action_token_mask is not None:
+            if token_mask is not None:
                 next_logit_scores, next_logits = next_logit_score_dist[sampled_action_idx].unsqueeze(0), next_logits_dist[sampled_action_idx]
                 # convert back to indices of tokenizer
-                next_logits = action_token_mask.nonzero()[:,1][next_logits].unsqueeze(0)
+                next_logits = token_mask.nonzero()[:,1][next_logits].unsqueeze(0)
             else:
                 # (bs,)
                 next_logit_scores = next_logit_score_dist.gather(-1,sampled_action_idx.unsqueeze(-1)).squeeze(-1)
@@ -313,7 +314,7 @@ class GoalConditionedTransformer(nn.Module):
                 )
             else:
                 feat['goal_representation'].append('')
-                instructions = item['ann']['instr'][instr_idx - 1:]
+                instructions = [item['ann']['instr'][instr_idx - 1]]
             for instr in instructions:
                 feat['goal_representation'][-1] += (
                     ''.join([i.rstrip() for i in instr])
@@ -331,35 +332,49 @@ class GoalConditionedTransformer(nn.Module):
         m = np.zeros((300, 300))
         # extract object(s) from action
         object_names = action.split(':')[-1].strip()
-        object_names = object_names.split(' in ')
+        object_names = [object_names.split(' in ')[-1]] # only want the destination object
         if len(object_names) == 0: return None
         # ["table", "chair"]
-        obj_label2feature_idx = {CLASSES[label]: i for i, label in enumerate(image_obj_features["class_labels"])}
+        obj_label2feature_idx = dict()
+        for i, label in enumerate(image_obj_features["class_labels"]):
+            if CLASSES[label] not in obj_label2feature_idx:
+                obj_label2feature_idx[CLASSES[label]] = i # TODO consider more aggressive probability filtering
         obj_masks = []
         for obj_name in object_names:
+            # TODO(sahit): switch from t/e to defaultdict
             try:
                 obj_idx = obj_label2feature_idx[snake_to_camel(obj_name)]
             except Exception as e:
                 print(f"trying to interact with: {obj_name} not in the scene")
-                obj_idx = 0
-                #breakpoint()
+                list_of_objs = image_obj_features['class_labels']
+                #lev_distances = [lev(snake_to_camel(obj_name), scene_elem) for scene_elem in list_of_objs]
+                distances = [snake_to_camel(obj_name) in CLASSES[scene_elem] for scene_elem in list_of_objs]
+                distances = [-1*int(x) for x in distances]
+                minimizing_idx = np.argmin(distances)
+                obj_name_similar = CLASSES[list_of_objs[minimizing_idx]]
+                print(f"replacing with {obj_name_similar}")
+                obj_idx = minimizing_idx
             obj_masks.append(image_obj_features['masks'][obj_idx][0])
+        m = obj_masks[0]
         return m
 
     def decode_prediction(self, m_out, curr_image, object_features):
         # TODO: Maybe cast all actions to be within the 13 valid tokens.
         # Also this is a good place to add in the exploration
         action = self.tokenizer.decode(m_out, skip_special_tokens=True).split(",")[0].strip()
+        if action == "stop>>":
+            action = "<<stop>>"
         if action.startswith("[subgoal]"):
-            api_action = "[subgoal]"
+            action = "[subgoal]"
         # convert BACK to API action!!!
         api_action = snake_to_camel(action.split(':')[0].strip())
         if api_action not in API_ACTIONS:
+            breakpoint()
             api_action =  API_ACTIONS[4]
         assert api_action in API_ACTIONS, f"{action} is not part of {API_ACTIONS}!"
         mask = (
             self.generate_action_mask(action, curr_image, object_features)
-            if self.has_interaction(action)
+            if self.has_interaction(api_action)
             else None
         )
         return {
@@ -372,7 +387,9 @@ class GoalConditionedTransformer(nn.Module):
         """
         check if low-level action is interactive
         """
-        return ':' in action
+        # TODO(sahit): go back to O.G has_interaction? messing w this fn is wrong
+        return action in ["PickupObject", "ToggleObject", "ToggleObjectOn", "ToggleObjectOff",
+                "PutObject", "SliceObject", "OpenObject", "CloseObject"]
         # non_interact_actions = [
         #     "MoveAhead",
         #     "Rotate",
