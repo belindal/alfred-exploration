@@ -38,7 +38,7 @@ if __name__ == '__main__':
 
     # eval settings
     parser.add_argument('--subgoals', type=str, help="subgoals to evaluate independently, eg:all or GotoLocation,PickupObject...", default="")
-    parser.add_argument('--force_last_subgoal', dest='force_last_subgoal', action='store_true')
+    parser.add_argument('--force_last_k_subgoals', type=int, default=0)
     parser.add_argument('--smooth_nav', dest='smooth_nav', action='store_true', help='smooth nav actions (might be required based on training data)')
     parser.add_argument('--skip_model_unroll_with_expert', action='store_true', help='forward model with expert actions')
     parser.add_argument('--no_teacher_force_unroll_with_expert', action='store_true', help='no teacher forcing with expert')

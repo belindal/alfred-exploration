@@ -47,7 +47,6 @@ python3 models/eval/eval_seq2seq.py --model_path /home/sahit/alfred-exploration/
 ```
 
 - If you want to follow expert demonstrations until the last subgoal, add the flag `--force_last_subgoal`
-- The list of instructions we use is found in `eval_task.py:65` (e.g from `traj['turk_annotations']['anns']`), not sure if these instructions are different than the ones used in training which seem to be `ex['ann']['instr']`
 - When this starts working for real, increase num_threads from 1 to e.g 3
 
 

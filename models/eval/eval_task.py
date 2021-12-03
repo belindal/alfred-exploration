@@ -13,6 +13,7 @@ from models.model.t5 import vis_encoder, API_ACTIONS, CLASSES, API_ACTIONS_NATUR
 from models.utils.debug_utils import plot_mask
 import gen.constants
 import random
+import scripts.exploration_strategies as exploration_strategies
 
 class EvalTask(Eval):
     '''
@@ -64,10 +65,10 @@ class EvalTask(Eval):
         # get expert actions for everything but the last subgoal
         num_subgoals = len(traj_data['turk_annotations']['anns'][r_idx]['high_descs'])
         # (i wonder if just one subgoal is too easy?)
-        expert_init_actions = [a['discrete_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] <= num_subgoals - 2]
+        expert_init_actions = [a['discrete_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] <= num_subgoals - 1 - args.force_last_k_subgoals]
 
         # extract language features
-        feat = model.featurize([traj_data])
+        feat = model.featurize([traj_data], instr_idx=-1)
 
         # goal instr
         goal_instr = traj_data['turk_annotations']['anns'][r_idx]['task_desc']
@@ -78,6 +79,8 @@ class EvalTask(Eval):
         reward = 0
 
         state_history = torch.tensor([])
+        n = 0
+        exploration_strat = exploration_strategies.get_random_exploration_sequence()
         while not done:
             # break if max_steps reached
             if t >= args.max_steps:
@@ -87,54 +90,59 @@ class EvalTask(Eval):
             curr_image = Image.fromarray(np.uint8(env.last_event.frame))
             curr_state = resnet.featurize([curr_image], batch=1)
             curr_state = vis_encoder(curr_state.cpu()).unsqueeze(0)
-            feat['all_states'] = torch.cat([state_history.cpu(), curr_state], dim=1)
 
             object_features = cls.get_visual_features(env, image_loader, region_detector, args, device)
             seen_objects = [unCamelSnakeCase(CLASSES[idx]) for idx in object_features[0]["class_labels"]]
 
             # forward model
             print("t: ", t)
-            m_out = model.test_generate(
-                feat["goal_representation"]["input_ids"].to(device),
-                feat['actions']['input_ids'].to(device),
-                feat["all_states"].to(device),
-                i_mask=feat["goal_representation"]["attention_mask"].to(device),
-                o_mask=feat['actions']['attention_mask'].to(device),
-                object_list = API_ACTIONS_NATURALIZED + seen_objects + [",", ":"]
-            )
-            feat['actions']['input_ids'] = m_out['action_seq']
-            feat['actions']['attention_mask'] = m_out['action_seq_mask']
-            state_history = m_out['states_seq']
-            m_pred = model.decode_prediction(m_out['actions'][0], curr_image, object_features[0])
-            #print(m_pred)
-            # check if <<stop>> was predicted
-            if m_pred['action_low'] == cls.STOP_TOKEN:
-                print("\tpredicted STOP")
-                break
-
-            # get action and mask
-            action, mask = m_pred['action_low'], m_pred['action_low_mask']
-            mask = mask if model.has_interaction(action) else None
-            if random.random() < 0.0:
-                #action = random.choice(API_ACTIONS)
-                action = random.choice(["RotateRight_90", "RotateLeft_90"])
-                if "_" in action:
-                    mask = None
-                else:
-                    mask = object_features[0]["masks"][0][0]
-
-            if t < len(expert_init_actions) and args.force_last_subgoal:
+            if t < len(expert_init_actions) and args.force_last_k_subgoals > 0:
                 action_dict = expert_init_actions[t]
                 action = action_dict['action']
                 compressed_mask = action_dict['args']['mask'] if 'mask' in action_dict['args'] else None
                 mask = env.decompress_mask(compressed_mask) if compressed_mask is not None else None
+                print("expert action: ", action)
+            else:
+                feat['all_states'] = torch.cat([state_history.cpu(), curr_state], dim=1)
+                m_out = model.test_generate(
+                    feat["goal_representation"]["input_ids"].to(device),
+                    feat['actions']['input_ids'].to(device),
+                    feat["all_states"].to(device),
+                    i_mask=feat["goal_representation"]["attention_mask"].to(device),
+                    o_mask=feat['actions']['attention_mask'].to(device),
+                    object_list = API_ACTIONS_NATURALIZED + seen_objects + [",", ":"]
+                )
+                feat['actions']['input_ids'] = m_out['action_seq']
+                feat['actions']['attention_mask'] = m_out['action_seq_mask']
+                state_history = m_out['states_seq']
+                m_pred = model.decode_prediction(m_out['actions'][0], curr_image, object_features[0])
+                #print(m_pred)
+                # check if <<stop>> was predicted
+                if m_pred['action_low'] == cls.STOP_TOKEN:
+                    print("\tpredicted STOP")
+                    break
+
+                # get action and mask
+                action, mask = m_pred['action_low'], m_pred['action_low_mask']
+                mask = mask if model.has_interaction(action) else None
+                if random.random() < 0.0:
+                    #action = random.choice(API_ACTIONS)
+                    action = random.choice(["RotateRight_90", "RotateLeft_90"])
+                    if "_" in action:
+                        mask = None
+                    else:
+                        mask = object_features[0]["masks"][0][0]
+                print("nn action: ", action)
+
 
             #if args.debug:
             #    plot_mask(feature["masks"][0][0], 'mask.png')
 
-            #print action
-            #if args.debug:
-            print(action)
+            """
+            if n < len(exploration_strat):
+                action = exploration_strat[n]
+                n+=1
+            """
             # use predicted action and mask (if available) to interact with the env
             t_success, _, _, err, _ = env.va_interact(action, interact_mask=mask, smooth_nav=args.smooth_nav, debug=args.debug)
             if not t_success:
