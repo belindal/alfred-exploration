@@ -38,6 +38,8 @@ def snake_to_camel(action_str):
 vis_encoder = ResnetVisualEncoder(dframe=512)
 API_ACTIONS = ["PickupObject", "ToggleObject", "LookDown_15", "MoveAhead_25", "RotateLeft_90", "LookUp_15", "RotateRight_90", "ToggleObjectOn", "ToggleObjectOff", "PutObject", "SliceObject", "OpenObject", "CloseObject", '[subgoal]', '<<stop>>']
 API_ACTIONS_NATURALIZED = [unCamelSnakeCase(action) for action in API_ACTIONS]
+API_ACTIONS_SORTED = ["PickupObject", "ToggleObject", "ToggleObjectOn", "ToggleObjectOff", "PutObject", "SliceObject", "OpenObject", "CloseObject", "LookDown_15", "MoveAhead_25", "RotateLeft_90", "LookUp_15", "RotateRight_90", "[subgoal]", "<<stop>>"]
+API_ACTIONS_SN = [unCamelSnakeCase(action) for action in API_ACTIONS_SORTED]
 CLASSES = ['0'] + gen.constants.OBJECTS + ['AppleSliced', 'ShowerCurtain', 'TomatoSliced', 'LettuceSliced', 'Lamp',
                                         'ShowerHead', 'EggCracked', 'BreadSliced', 'PotatoSliced', 'Faucet']
 
@@ -288,7 +290,8 @@ class GoalConditionedTransformer(nn.Module):
         batch_all_next_actions_masks = torch.stack(batch_all_next_actions_masks, dim=0)
         # (bs, n_actions, n_tokens+n_tokens_in_actions, image_dim)
         batch_all_next_actions_imgs = torch.stack(batch_all_next_actions_imgs, dim=0)
-        return batch_action_scores, {'actions': batch_all_next_actions, 'actions_masks': batch_all_next_actions_masks, 'states': batch_all_next_actions_imgs}
+        best_action = batch_action_scores.argmax(-1)[0]
+        return batch_action_scores, {'action_seq': batch_all_next_actions[:,best_action], 'action_seq_mask': batch_all_next_actions_masks[:,best_action], 'states_seq': batch_all_next_actions_imgs[:,best_action], 'actions' : all_action_tokens['input_ids'][best_action].unsqueeze(0)}
 
     @classmethod
     def load(cls, args, fsave):
