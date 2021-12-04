@@ -9,7 +9,7 @@ from datetime import datetime
 from models.eval.eval import Eval
 from env.thor_env import ThorEnv
 from scripts.generate_maskrcnn import MaskRCNNDetector, CustomImageLoader
-from models.model.t5 import vis_encoder, API_ACTIONS, CLASSES, API_ACTIONS_NATURALIZED, unCamelSnakeCase
+from models.model.t5 import vis_encoder, API_ACTIONS, CLASSES, API_ACTIONS_NATURALIZED, unCamelSnakeCase, API_ACTIONS_SN
 from models.utils.debug_utils import plot_mask
 import gen.constants
 import random
@@ -98,23 +98,30 @@ class EvalTask(Eval):
             seen_objects = [unCamelSnakeCase(CLASSES[idx]) for idx in object_features[0]["class_labels"]]
 
             # forward model
-            print("t: ", t)
             if t < len(expert_init_actions) and args.force_last_k_subgoals > 0:
                 action_dict = expert_init_actions[t]
                 action = action_dict['action']
                 compressed_mask = action_dict['args']['mask'] if 'mask' in action_dict['args'] else None
                 mask = env.decompress_mask(compressed_mask) if compressed_mask is not None else None
-                print("expert action: ", action)
             else:
                 feat['all_states'] = torch.cat([state_history.cpu(), curr_state], dim=1)
-                m_out = model.test_generate(
+                scores, m_out = model.score_all_continuations(
                     feat["goal_representation"]["input_ids"].to(device),
                     feat['actions']['input_ids'].to(device),
                     feat["all_states"].to(device),
                     i_mask=feat["goal_representation"]["attention_mask"].to(device),
                     o_mask=feat['actions']['attention_mask'].to(device),
-                    object_list = API_ACTIONS_NATURALIZED + [",", ":", "in"] + seen_objects
+                    continuations = [x + ":" for x in API_ACTIONS_SN[:8]] + [x + "," for x in API_ACTIONS_SN[8:]]
                 )
+                if scores.argmax() < 8:
+                    m_out = model.test_generate(
+                        feat["goal_representation"]["input_ids"].to(device),
+                        feat['actions']['input_ids'].to(device),
+                        feat["all_states"].to(device),
+                        i_mask=feat["goal_representation"]["attention_mask"].to(device),
+                        o_mask=feat['actions']['attention_mask'].to(device),
+                        object_list = API_ACTIONS_NATURALIZED + [",", ":", "in"] + seen_objects
+                    )
                 feat['actions']['input_ids'] = m_out['action_seq']
                 feat['actions']['attention_mask'] = m_out['action_seq_mask']
                 state_history = m_out['states_seq']
