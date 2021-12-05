@@ -269,6 +269,7 @@ class GoalConditionedTransformer(nn.Module):
             # (n_actions, image_dim) -> (n_actions, n_tokens+n_tokens_in_actions, image_dim)
             all_next_action_imgs = all_next_action_imgs.unsqueeze(0).repeat(n_actions,1,1)
             all_next_action_imgs[:,next_token_pos:next_token_pos+n_tokens_in_actions,:] = all_next_action_imgs[:,next_token_pos-1,:].unsqueeze(1).repeat(1,n_tokens_in_actions,1)
+            all_next_action_imgs[~all_next_actions_w_seq_mask] = 0.0  # mask out padding
             batch_all_next_actions_imgs.append(all_next_action_imgs)
 
             # (n_actions, n_tokens_in_actions, word_embed_dim + image_dim) -> (n_actions, n_tokens_in_actions, linear_out_dim)
