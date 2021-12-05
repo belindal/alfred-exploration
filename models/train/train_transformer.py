@@ -21,7 +21,7 @@ import numpy as np
 from gen.utils.image_util import decompress_mask
 from torch.nn.utils.rnn import pad_sequence
 from transformers import AdamW
-from models.model.t5 import GoalConditionedTransformer, unCamelSnakeCase, API_ACTIONS_NATURALIZED
+from models.model.t5 import GoalConditionedTransformer, unCamelSnakeCase, API_ACTIONS_NATURALIZED, API_ACTIONS_SN, CLASSES_NATURALIZED
 from tqdm import tqdm
 import itertools as it
 import random
@@ -340,6 +340,7 @@ if __name__ == '__main__':
     parser.add_argument('--action_loss_wt', help='weight of action loss', default=1., type=float)
     parser.add_argument('--subgoal_aux_loss_wt', help='weight of subgoal completion predictor', default=0., type=float)
     parser.add_argument('--pm_aux_loss_wt', help='weight of progress monitor', default=0., type=float)
+    parser.add_argument('--label_smoothing', help='amount of label smoothing to use (0 by default)', default=0., type=float)
 
     # dropouts
     parser.add_argument('--zero_goal', help='zero out goal language', action='store_true')
@@ -435,6 +436,7 @@ if __name__ == '__main__':
                 image_sequence=feat['state_seq_w_curr'],
                 i_mask=feat['input_goals']['attention_mask'],
                 o_mask=feat['action_seq_w_curr']['attention_mask'],
+                label_smoothing=args.label_smoothing,
             )
             loss = all_outputs.loss
             outputs = model.test_generate(
@@ -450,9 +452,38 @@ if __name__ == '__main__':
                 image_seq_w_curr=feat['state_seq_w_curr'],
                 i_mask=feat['input_goals']['attention_mask'],
                 o_mask=feat['action_seq_past']['attention_mask'],
-                continuations=[action + "," for action in API_ACTIONS_NATURALIZED],
+                continuations = [x + ":" for x in API_ACTIONS_SN[:8]] + [x + "," for x in API_ACTIONS_SN[8:]]
             )
+            is_interact_action = all_action_scores.argmax(-1) < 8
+            best_actions_fullscore = new_action_states['actions']
+            if is_interact_action.any():
+                # TODO replicate final state once
+                new_image_seq = torch.cat([new_action_states['states_seq'], new_action_states['states_seq'][:,-1,:].unsqueeze(1)], dim=1)
+                new_image_seq = new_image_seq.clone()
+                last_pos_idx = new_action_states['action_seq_mask'].sum(1)
+                new_image_seq[:,last_pos_idx,:] = new_image_seq[:,last_pos_idx-1,:]
+                bs = feat['input_goals']['input_ids'].size(0)
+
+                # score actions
+                all_action_scores_objs, new_action_states_objs = model.score_all_continuations(
+                    goal_representation=feat['input_goals']['input_ids'],
+                    action_seq_past=new_action_states['action_seq'],
+                    image_seq_w_curr=new_image_seq,
+                    i_mask=feat['input_goals']['attention_mask'],
+                    o_mask=new_action_states['action_seq_mask'],
+                    continuations = [obj+',' for obj in CLASSES_NATURALIZED],
+                )
+                last_token_pos = (new_action_states['actions'] != 0).sum(-1)
+                for interact_idx in is_interact_action.nonzero():
+                    interact_idx = interact_idx.squeeze()
+                    total_action_size = new_action_states_objs['actions'].size(1) + last_token_pos[interact_idx]
+                    if best_actions_fullscore.size(1) < total_action_size:
+                        best_actions_fullscore = F.pad(best_actions_fullscore, pad=(0,total_action_size-best_actions_fullscore.size(1),0,0), value=0)
+                    best_actions_fullscore[
+                        interact_idx, last_token_pos[interact_idx]:total_action_size
+                    ] = new_action_states_objs['actions'][interact_idx]  # TODO check if changed
             metrics = dl_splits['valid_seen'].compute_metrics(outputs, feat)
+            # metrics = dl_splits['valid_seen'].compute_metrics(best_actions_fullscore, feat)
             acc = metrics['accuracy']
             outputs = metrics['output_dicts']
             for idx, output in enumerate(outputs):
@@ -489,6 +520,7 @@ if __name__ == '__main__':
                 image_sequence=feat['state_seq_w_curr'],
                 i_mask=feat['input_goals']['attention_mask'],
                 o_mask=feat['action_seq_w_curr']['attention_mask'],
+                label_smoothing=args.label_smoothing,
             )
             # output = model(input_ids=feat['input_goals']['input_ids'], attention_mask=feat['input_goals']['attention_mask'], =tgt_action, return_dict=True)
             # feat['frames'])

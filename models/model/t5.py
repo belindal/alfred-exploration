@@ -46,6 +46,7 @@ API_ACTIONS_SORTED = ["PickupObject", "ToggleObject", "ToggleObjectOn", "ToggleO
 API_ACTIONS_SN = [unCamelSnakeCase(action) for action in API_ACTIONS_SORTED]
 CLASSES = ['0'] + gen.constants.OBJECTS + ['AppleSliced', 'ShowerCurtain', 'TomatoSliced', 'LettuceSliced', 'Lamp',
                                         'ShowerHead', 'EggCracked', 'BreadSliced', 'PotatoSliced', 'Faucet']
+CLASSES_NATURALIZED = [unCamelSnakeCase(obj) for obj in CLASSES]
 
 class GoalConditionedTransformer(nn.Module):
     def __init__(self, concat_dim=1024, hidden_dim=512,random_init=0, args=None):
@@ -87,9 +88,12 @@ class GoalConditionedTransformer(nn.Module):
             'labels': labels,
         }
 
-    def train_forward(self, goal_representation, action_sequence, image_sequence,i_mask,o_mask):
+    def train_forward(self, goal_representation, action_sequence, image_sequence,i_mask,o_mask, label_smoothing=0.0):
         transformer_inputs = self.setup_inputs_for_train(goal_representation, action_sequence, image_sequence,i_mask,o_mask)
+        labels = transformer_inputs['labels']
         model_outs = self.model(**transformer_inputs)
+        loss_fct = nn.CrossEntropyLoss(ignore_index=-100, label_smoothing=label_smoothing)
+        model_outs.loss = loss_fct(model_outs.logits.view(-1, model_outs.logits.size(-1)), labels.view(-1))
         return model_outs
 
     def setup_inputs_for_generate(self, goal_representation, action_seq_past, image_seq_w_curr, i_mask=None, o_mask=None):
@@ -102,7 +106,10 @@ class GoalConditionedTransformer(nn.Module):
         action_sequence = F.pad(input=action_seq_past, pad=(1,0,0,0), value=self.model.config.decoder_start_token_id)  # prepend bos token
         action_sequence_mask = F.pad(input=o_mask, pad=(1,0,0,0), value=1)
         image_sequence = image_seq_w_curr[:,:action_seq_past.size(1)+1,:].clone()
-        assert image_sequence.size()[:2] == action_sequence.size()
+        try:
+            assert image_sequence.size()[:2] == action_sequence.size()
+        except:
+            breakpoint()
         # # sanity check
         # if image_sequence.size(1) > 1:
         #     assert not (image_sequence[:,-1,:] == image_sequence[:,-2,:]).all()
@@ -225,6 +232,7 @@ class GoalConditionedTransformer(nn.Module):
         )
         # (n_actions, n_tokens)
         all_action_tokens = self.tokenizer(continuations, return_tensors='pt', padding=True, add_special_tokens=False).to(self.device)
+        n_actions, n_tokens_in_actions = all_action_tokens['input_ids'].size(0), all_action_tokens['input_ids'].size(1)
 
         bs = goal_representation.size(0)
         batch_action_scores = []
@@ -235,53 +243,54 @@ class GoalConditionedTransformer(nn.Module):
         batch_all_next_actions_masks = []
         batch_all_next_actions_imgs = []
 
+        next_token_positions = torch.stack([asm.nonzero().max() + 1 for asm in action_sequence_mask])
+        # (bs, n_tokens)
+        all_next_actions_w_seq = action_sequence.clone()
+        all_next_actions_w_seq_mask = action_sequence_mask.clone()
+        all_next_action_imgs = image_sequence.clone()
+        # add sequence to end
+        if action_sequence.size(1) < n_tokens_in_actions + next_token_positions.max():
+            # (bs,n_tokens+n_tokens_in_actions)
+            all_next_actions_w_seq = F.pad(all_next_actions_w_seq, pad=(0,n_tokens_in_actions+next_token_positions.max()-action_sequence.size(1),0,0), value=self.tokenizer.pad_token_id)
+            all_next_actions_w_seq_mask = F.pad(all_next_actions_w_seq_mask, pad=(0,n_tokens_in_actions+next_token_positions.max()-action_sequence_mask.size(1),0,0), value=0)
+            # repeat last state
+            # (bs, n_tokens+n_tokens_in_actions, image_dim)
+            all_next_action_imgs = F.pad(image_sequence, pad=(0,0,0,n_tokens_in_actions+next_token_positions.max()-image_sequence.size(1),0,0), value=0.0)
+
         for i in range(bs):
-            next_token_pos = action_sequence_mask[i].nonzero().max() + 1
-            n_actions, n_tokens_in_actions = all_action_tokens['input_ids'].size(0), all_action_tokens['input_ids'].size(1)
-            # (n_tokens)
-            all_next_actions_w_seq = action_sequence[i].clone()
-            all_next_actions_w_seq_mask = action_sequence_mask[i].clone()
+            next_token_pos = next_token_positions[i]
             """
             make new action sequence
             """
-            # add sequence to end
-            if action_sequence[i].size(0) < n_tokens_in_actions + next_token_pos:
-                # (n_tokens+n_tokens_in_actions)
-                all_next_actions_w_seq = F.pad(action_sequence[i], pad=(0,n_tokens_in_actions+next_token_pos-action_sequence[i].size(0)), value=self.tokenizer.pad_token_id)
-                all_next_actions_w_seq_mask = F.pad(action_sequence_mask[i], pad=(0,n_tokens_in_actions+next_token_pos-action_sequence_mask[i].size(0)), value=0)
+            # (n_tokens+n_tokens_in_actions) -> (n_actions, n_tokens+n_tokens_in_actions)
+            all_next_actions_w_seq_i = all_next_actions_w_seq[i].unsqueeze(0).repeat(n_actions,1)
+            all_next_actions_w_seq_mask_i = all_next_actions_w_seq_mask[i].unsqueeze(0).repeat(n_actions,1)
             # (n_actions, n_tokens+n_tokens_in_actions)
-            all_next_actions_w_seq = all_next_actions_w_seq.unsqueeze(0).repeat(n_actions,1)
-            all_next_actions_w_seq[:,next_token_pos:next_token_pos+n_tokens_in_actions] = all_action_tokens['input_ids']
-            all_next_actions_w_seq_mask = all_next_actions_w_seq_mask.unsqueeze(0).repeat(n_actions,1)
-            all_next_actions_w_seq_mask[:,next_token_pos:next_token_pos+n_tokens_in_actions] = all_action_tokens['attention_mask']
-            batch_all_next_actions.append(all_next_actions_w_seq)
-            batch_all_next_actions_masks.append(all_next_actions_w_seq_mask)
+            all_next_actions_w_seq_i[:,next_token_pos:next_token_pos+n_tokens_in_actions] = all_action_tokens['input_ids']
+            all_next_actions_w_seq_mask_i[:,next_token_pos:next_token_pos+n_tokens_in_actions] = all_action_tokens['attention_mask']
+            # [(n_actions, n_tokens+n_tokens_in_actions) x i]
+            batch_all_next_actions.append(all_next_actions_w_seq_i)
+            batch_all_next_actions_masks.append(all_next_actions_w_seq_mask_i)
 
             """
             make new image sequence
             """
-            # (n_tokens, image_dim)
-            all_next_action_imgs = image_sequence[i].clone()
-            # repeat last state
-            if image_sequence[i].size(0) < n_tokens_in_actions + next_token_pos:
-                # (n_tokens+n_tokens_in_actions, image_dim)
-                all_next_action_imgs = F.pad(image_sequence[i], pad=(0,0,0,n_tokens_in_actions+next_token_pos-image_sequence[i].size(0)), value=0.0)
-            # (n_actions, image_dim) -> (n_actions, n_tokens+n_tokens_in_actions, image_dim)
-            all_next_action_imgs = all_next_action_imgs.unsqueeze(0).repeat(n_actions,1,1)
-            all_next_action_imgs[:,next_token_pos:next_token_pos+n_tokens_in_actions,:] = all_next_action_imgs[:,next_token_pos-1,:].unsqueeze(1).repeat(1,n_tokens_in_actions,1)
-            all_next_action_imgs[~all_next_actions_w_seq_mask] = 0.0  # mask out padding
-            batch_all_next_actions_imgs.append(all_next_action_imgs)
+            # (bs, n_actions, image_dim) -> (n_actions, n_tokens+n_tokens_in_actions, image_dim)
+            all_next_action_imgs_i = all_next_action_imgs[i].unsqueeze(0).repeat(n_actions,1,1)
+            all_next_action_imgs_i[:,next_token_pos:next_token_pos+n_tokens_in_actions,:] = all_next_action_imgs_i[:,next_token_pos-1,:].unsqueeze(1).repeat(1,n_tokens_in_actions,1)
+            all_next_action_imgs_i[~all_next_actions_w_seq_mask_i.bool()] = 0.0  # mask out padding
+            batch_all_next_actions_imgs.append(all_next_action_imgs_i)
 
             # (n_actions, n_tokens_in_actions, word_embed_dim + image_dim) -> (n_actions, n_tokens_in_actions, linear_out_dim)
-            all_next_actions_w_seq_embed = self.model.decoder.embed_tokens(all_next_actions_w_seq)
-            fused_next_action_image_rep = self.fusion_module(torch.cat([all_next_actions_w_seq_embed, all_next_action_imgs], dim=-1))
-            next_action_pred = all_next_actions_w_seq[:,1:].clone()
+            all_next_actions_w_seq_embed_i = self.model.decoder.embed_tokens(all_next_actions_w_seq_i)
+            fused_next_action_image_rep = self.fusion_module(torch.cat([all_next_actions_w_seq_embed_i, all_next_action_imgs_i], dim=-1))
+            next_action_pred = all_next_actions_w_seq_i[:,1:].clone()
             next_action_pred[next_action_pred[:, :] == self.tokenizer.pad_token_id] = -100
             fused_next_action_image_rep_inputs = fused_next_action_image_rep[:,:-1,:]
 
             model_outputs = self.model(
                 encoder_outputs=(encoder_outputs.last_hidden_state[i].unsqueeze(0).repeat(n_actions,1,1),),
-                decoder_inputs_embeds=fused_next_action_image_rep_inputs, decoder_attention_mask=all_next_actions_w_seq_mask[:,:-1],
+                decoder_inputs_embeds=fused_next_action_image_rep_inputs, decoder_attention_mask=all_next_actions_w_seq_mask_i[:,:-1],
                 labels=next_action_pred,
             )
             loss_fct = nn.CrossEntropyLoss(ignore_index=-100, reduction='none')
@@ -298,8 +307,12 @@ class GoalConditionedTransformer(nn.Module):
         batch_all_next_actions_masks = torch.stack(batch_all_next_actions_masks, dim=0)
         # (bs, n_actions, n_tokens+n_tokens_in_actions, image_dim)
         batch_all_next_actions_imgs = torch.stack(batch_all_next_actions_imgs, dim=0)
-        best_action = batch_action_scores.argmax(-1)[0]
-        return batch_action_scores, {'action_seq': batch_all_next_actions[:,best_action], 'action_seq_mask': batch_all_next_actions_masks[:,best_action], 'states_seq': batch_all_next_actions_imgs[:,best_action], 'actions' : all_action_tokens['input_ids'][best_action].unsqueeze(0)}
+        if bs == 1:
+            best_action = batch_action_scores.argmax(-1)[0]
+            return batch_action_scores, {'action_seq': batch_all_next_actions[:,best_action], 'action_seq_mask': batch_all_next_actions_masks[:,best_action], 'states_seq': batch_all_next_actions_imgs[:,best_action], 'actions' : all_action_tokens['input_ids'][best_action].unsqueeze(0)}
+        else:
+            best_action = batch_action_scores.argmax(-1)
+            return batch_action_scores, {'action_seq': batch_all_next_actions[torch.arange(bs),best_action], 'action_seq_mask': batch_all_next_actions_masks[torch.arange(bs),best_action], 'states_seq': batch_all_next_actions_imgs[torch.arange(bs),best_action], 'actions' : all_action_tokens['input_ids'][best_action]}
 
     @classmethod
     def load(cls, args, fsave):
