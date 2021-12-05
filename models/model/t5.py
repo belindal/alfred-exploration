@@ -24,6 +24,10 @@ def snake_to_camel(action_str):
     for all actions and all objects unsnake case and camel case.
     re-add numbers
     """
+    if action_str == "toggle object on":
+        return "ToggleObjectOn"
+    elif action_str == "toggle object off":
+        return "ToggleObjectOff"
     def camel(match):
         return match.group(1)[0].upper() + match.group(1)[1:] + match.group(2).upper()
     action_str = re.sub(r'(.*?) ([a-zA-Z])', camel, action_str)
@@ -51,7 +55,8 @@ class GoalConditionedTransformer(nn.Module):
             config = AutoConfig.from_pretrained('t5-small')
             self.model = AutoModelForSeq2SeqLM.from_config(config)
         else:
-            self.model = T5ForConditionalGeneration.from_pretrained('t5-small', return_dict=True)
+            self.model=T5ForConditionalGeneration.from_pretrained('t5-small', return_dict=True)
+
         self.tokenizer = T5Tokenizer.from_pretrained('t5-small')
         self.concat_dim = concat_dim
         self.hidden_dim = hidden_dim
@@ -116,7 +121,6 @@ class GoalConditionedTransformer(nn.Module):
         action_sequence, action_sequence_mask, image_sequence, fused_action_image_rep = self.setup_inputs_for_generate(
             goal_representation, action_seq_past, image_seq_w_curr, i_mask=i_mask, o_mask=o_mask,
         )
-
         scores = []
         next_actions = []
         bs = goal_representation.size(0)
@@ -160,6 +164,9 @@ class GoalConditionedTransformer(nn.Module):
             else:
                 next_logit_score_dist, next_logits_dist = model_output.logits[torch.arange(bs),last_token_pos].topk(n_cands_to_sample_from, dim=-1)
             scores_dist = torch.distributions.Categorical(logits = next_logit_score_dist)
+            if unroll_idx == 0:
+                dist_for_logging = torch.distributions.Categorical(logits = model_output.logits[0][last_token_pos][token_mask])
+                entropy = dist_for_logging.entropy()
             sampled_action_idx = scores_dist.sample()
             if token_mask is not None:
                 next_logit_scores, next_logits = next_logit_score_dist[sampled_action_idx].unsqueeze(0), next_logits_dist[sampled_action_idx]
@@ -204,7 +211,7 @@ class GoalConditionedTransformer(nn.Module):
         next_actions = torch.stack(next_actions, dim=1)
         # bs x n_gen_tokens -> bs
         scores = -torch.stack(scores, dim=1).sum(-1)
-        return {'actions': next_actions, 'action_seq': action_sequence, 'action_seq_mask': action_sequence_mask, 'states_seq': image_sequence, 'log_probs': scores}
+        return {'actions': next_actions, 'action_seq': action_sequence, 'action_seq_mask': action_sequence_mask, 'states_seq': image_sequence, 'log_probs': scores}, entropy
 
     def score_all_continuations(self, goal_representation, action_seq_past, image_seq_w_curr, i_mask, o_mask, continuations: list):
         bs = goal_representation.size(0)
