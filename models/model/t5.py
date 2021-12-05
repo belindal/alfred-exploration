@@ -369,6 +369,7 @@ class GoalConditionedTransformer(nn.Module):
                 obj_idx = obj_label2feature_idx[snake_to_camel(obj_name)]
             except Exception as e:
                 print(f"trying to interact with: {obj_name} not in the scene")
+                obj_name = ' ' if obj_name == '' else obj_name
                 list_of_objs = image_obj_features['class_labels']
                 distances = [snake_to_camel(obj_name) in CLASSES[scene_elem] for scene_elem in list_of_objs]
                 distances = [-1*int(x) for x in distances]

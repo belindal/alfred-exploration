@@ -53,7 +53,7 @@ The main files that I added for the Transformer training are `models/train/train
 
 ## Evaluating the Transformer
 ```bash
-python3 models/eval/eval_seq2seq.py --model_path /home/sahit/alfred-exploration/models/subgoals/transformer_new_ep0_step80000.pth --eval_split valid_seen --data /home/sahit/alfred-exploration/data/json_feat_2.1.0 --model models.model.t5 --gpu --num_threads 1 --max_steps 100
+python3 models/eval/eval_seq2seq.py --model_path /home/sahit/alfred-exploration/models/subgoals/transformer_new_ep0_step80000.pth --eval_split valid_unseen --data /home/sahit/alfred-exploration/data/json_feat_2.1.0 --model models.model.t5 --gpu --num_threads 1 --max_steps 100
 ```
 
 - If you want to follow expert demonstrations until the last k subgoals, add the flag `--force_last_k_subgoals` with an int k
