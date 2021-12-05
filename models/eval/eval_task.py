@@ -28,7 +28,9 @@ class EvalTask(Eval):
         # start THOR
         env = ThorEnv()
         runs = 0
-        while True:
+        successful_entropies = list()
+        failed_entropies = list()
+        while runs < 200:
             runs += 1
             if task_queue.qsize() == 0:
                 break
@@ -38,7 +40,11 @@ class EvalTask(Eval):
                 r_idx = task['repeat_idx']
                 print("Evaluating: %s" % (traj['root']))
                 print("No. of trajectories left: %d" % (task_queue.qsize()))
-                cls.evaluate(env, model, r_idx, resnet, image_loader, region_detector, traj, args, lock, successes, failures, results)
+                entropies, success_status = cls.evaluate(env, model, r_idx, resnet, image_loader, region_detector, traj, args, lock, successes, failures, results)
+                if success_status:
+                    successful_entropies.append(float(entropies[0]))
+                else:
+                    failed_entropies.append(float(entropies[0]))
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -47,12 +53,22 @@ class EvalTask(Eval):
 
         # stop THOR
         env.stop()
+        """
+        plt.title("Entropy over action unigrams")
+        se_np = np.array(successful_entropies)
+        fe_np = np.array(failed_entropies)
+        print("successful mean, std: ", (np.mean(se_np), np.var(se_np)))
+        print("failed mean, std: ", (np.mean(fe_np), np.var(fe_np)))
+        plt.boxplot([successful_entropies, failed_entropies], labels=["successful", "failed"])
+        plt.show()
+        """
 
 
     @classmethod
-    def evaluate(cls, env, model, r_idx, resnet, image_loader, region_detector, traj_data, args, lock, successes, failures, results):
+    def evaluate(cls, env, model, r_idx, resnet, image_loader, region_detector, traj_data, args, lock, successes, failures, results, do_constrained_gen=True):
         # reset model
         #model.reset()
+        entropies = []
         device = torch.device("cpu")
         instr_idx = -args.force_last_k_subgoals
         if vars(args)["gpu"]:
@@ -113,8 +129,10 @@ class EvalTask(Eval):
                     o_mask=feat['actions']['attention_mask'].to(device),
                     continuations = [x + ":" for x in API_ACTIONS_SN[:8]] + [x + "," for x in API_ACTIONS_SN[8:]]
                 )
-                if scores.argmax() < 8:
-                    m_out = model.test_generate(
+                scores_distribution = torch.distributions.Categorical(logits=scores)
+                entropy_continuations = scores_distribution.entropy()
+                if scores.argmax() < 8 or do_constrained_gen:
+                    m_out, entropy_tg = model.test_generate(
                         feat["goal_representation"]["input_ids"].to(device),
                         feat['actions']['input_ids'].to(device),
                         feat["all_states"].to(device),
@@ -122,6 +140,10 @@ class EvalTask(Eval):
                         o_mask=feat['actions']['attention_mask'].to(device),
                         object_list = API_ACTIONS_NATURALIZED + [",", ":", "in"] + seen_objects
                     )
+                if do_constrained_gen:
+                    entropies.append(entropy_tg)
+                else:
+                    entropies.append(entropy_continuations)
                 feat['actions']['input_ids'] = m_out['action_seq']
                 feat['actions']['attention_mask'] = m_out['action_seq_mask']
                 state_history = m_out['states_seq']
@@ -140,6 +162,18 @@ class EvalTask(Eval):
                 # get action and mask
                 action, mask = m_pred['action_low'], m_pred['action_low_mask']
                 mask = mask if model.has_interaction(action) else None
+                #plt.imshow(mask)
+                #plt.show()
+                """
+                expert_action = gt_actions[t]
+                if mask is not None:
+                    expert_mask = env.decompress_mask(expert_action['args']['mask'])
+                    plt.title("Ground Truth Mask")
+                    plt.imshow(expert_mask)
+                    plt.show()
+                    curr_image.save("env_table.jpg")
+                    sys.exit()
+                """
                 if random.random() < 0.0:
                     #action = random.choice(API_ACTIONS)
                     action = random.choice(["RotateRight_90", "RotateLeft_90"])
@@ -242,6 +276,8 @@ class EvalTask(Eval):
                 results[task_type] = {}
 
         lock.release()
+        print("goal sastisfied: ", goal_satisfied)
+        return entropies, goal_satisfied
 
     @classmethod
     def get_metrics(cls, successes, failures):
