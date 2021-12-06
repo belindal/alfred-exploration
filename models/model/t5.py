@@ -118,7 +118,7 @@ class GoalConditionedTransformer(nn.Module):
         fused_action_image_rep = self.fusion_module(torch.cat([embedded_action_sequence, image_sequence], dim=-1))
         return action_sequence, action_sequence_mask, image_sequence, fused_action_image_rep
 
-    def test_generate(self, goal_representation, action_seq_past, image_seq_w_curr, i_mask=None, o_mask=None, topk=1, object_list=None):
+    def test_generate(self, goal_representation, action_seq_past, image_seq_w_curr, i_mask=None, o_mask=None, topk=1, object_list=None, temperature=1.0):
         """
         goal_representation: (bs, # tokens in goal)
         action_seq_past: (bs, tok_len of action sequence history)
@@ -166,10 +166,12 @@ class GoalConditionedTransformer(nn.Module):
                 n_cands_to_sample_from = topk
             else:
                 n_cands_to_sample_from = 1
+            model_output.logits /= temperature
             if token_mask is not None:
                 next_logit_score_dist, next_logits_dist = model_output.logits[0][last_token_pos][token_mask].topk(n_cands_to_sample_from, dim=-1)
             else:
                 next_logit_score_dist, next_logits_dist = model_output.logits[torch.arange(bs),last_token_pos].topk(n_cands_to_sample_from, dim=-1)
+            # TODO softmax here????
             scores_dist = torch.distributions.Categorical(logits = next_logit_score_dist)
             if unroll_idx == 0:
                 dist_for_logging = torch.distributions.Categorical(logits = model_output.logits[0][last_token_pos][token_mask])

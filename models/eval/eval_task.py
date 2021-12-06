@@ -138,7 +138,10 @@ class EvalTask(Eval):
                         feat["all_states"].to(device),
                         i_mask=feat["goal_representation"]["attention_mask"].to(device),
                         o_mask=feat['actions']['attention_mask'].to(device),
-                        object_list = API_ACTIONS_NATURALIZED + [",", ":", "in"] + seen_objects
+                        object_list = API_ACTIONS_NATURALIZED + [",", ":", "in"] + seen_objects,
+                        temperature=args.decode_temperature,
+                        topk=args.topk,
+
                     )
                 if do_constrained_gen:
                     entropies.append(entropy_tg)
