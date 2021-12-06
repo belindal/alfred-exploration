@@ -37,6 +37,7 @@ if __name__ == '__main__':
     parser.add_argument('--max_fails', type=int, default=10, help='max API execution failures before episode termination')
 
     # eval settings
+    parser.add_argument('--naive_explore', action='store_true', help="under high uncertainty, switch to a fixed exploration routine")
     parser.add_argument('--decode_temperature', type=float, default=1.0, help='temperature scaling parameter to calibrate predictions')
     parser.add_argument('--topk', type=int, default=1, help='number of samples to consider for top-K sampling')
     parser.add_argument('--subgoals', type=str, help="subgoals to evaluate independently, eg:all or GotoLocation,PickupObject...", default="")

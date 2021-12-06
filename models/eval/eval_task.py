@@ -31,7 +31,7 @@ class EvalTask(Eval):
         runs = 0
         successful_entropies = list()
         failed_entropies = list()
-        num_runs = 5
+        num_runs = 50
         success_count = 0
         while runs < num_runs:
             runs += 1
@@ -60,11 +60,19 @@ class EvalTask(Eval):
 
         # stop THOR
         model_type = 'baseline'
-        if 'ls' in args.model_path:
+        strategy = 'greedy'
+        if 'ls0.2' in args.model_path:
+            print(args.model_path)
             model_type = 'ls'
+        if args.decode_temperature > 1:
+            strategy = 'sample_ts'
+        elif args.topk > 1:
+            strategy = 'sample'
+        elif args.naive_explore:
+            strategy = 'explore'
         env.stop()
         sr = float(success_count)/num_runs
-        result_writer.write_result("results.pkl", model_type, "greedy", (args.force_last_k_subgoals, sr))
+        result_writer.write_result("results.pkl", model_type, strategy, (args.force_last_k_subgoals, sr))
         """
         plt.title("Entropy over action bigrams")
         se_np = np.array(successful_entropies)
@@ -111,6 +119,7 @@ class EvalTask(Eval):
         state_history = torch.tensor([])
         n = 0
         exploration_strat = exploration_strategies.get_random_exploration_sequence()
+        ENTROPY_THRESH = 0.1 if 'ls0.2' in args.model_path else 0.05
         ep_history = []
         while not done:
             # break if max_steps reached
@@ -204,12 +213,12 @@ class EvalTask(Eval):
 
             #if args.debug:
             #    plot_mask(feature["masks"][0][0], 'mask.png')
-
-            """
-            if n < len(exploration_strat):
+            high_entropy = len(entropies) > 1 and entropies[-1] > ENTROPY_THRESH
+            if args.naive_explore and n < len(exploration_strat) and high_entropy:
                 action = exploration_strat[n]
                 n+=1
-            """
+            else:
+                n=0
             # use predicted action and mask (if available) to interact with the env
             t_success, _, _, err, _ = env.va_interact(action, interact_mask=mask, smooth_nav=args.smooth_nav, debug=args.debug)
             if not t_success:

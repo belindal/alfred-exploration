@@ -27,15 +27,19 @@ def plot_results():
     results = read_results("results.pkl")
     for model in models:
         for method in methods:
+            print((model, method))
             print(results[model][method])
             results_sr = [x[1] for x in results[model][method]]
             results_k = [x[0] for x in results[model][method]]
             plt.plot(results_k, results_sr, label=f"{model}, {method}")
     plt.legend()
+    plt.title("Transformer Performance on Test Tasks")
+    plt.xlabel("Number of subgoals")
+    plt.ylabel("Success Rate")
     plt.show()
 
 if __name__ == "__main__":
-    if sys.argv[1] == "new":
+    if len(sys.argv) >= 2 and sys.argv[1] == "new":
         make_empty_results("results.pkl")
     else:
         plot_results()

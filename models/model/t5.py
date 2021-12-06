@@ -408,7 +408,7 @@ class GoalConditionedTransformer(nn.Module):
         # convert BACK to API action!!!
         api_action = snake_to_camel(action.split(':')[0].strip())
         if api_action not in API_ACTIONS:
-            breakpoint()
+            print(f"API ACTION {api_action} not in API_ACTIONS")
             api_action =  API_ACTIONS[4]
         assert api_action in API_ACTIONS, f"{action} is not part of {API_ACTIONS}!"
         mask = (
