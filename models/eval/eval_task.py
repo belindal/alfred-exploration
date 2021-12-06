@@ -14,6 +14,7 @@ from models.utils.debug_utils import plot_mask
 import gen.constants
 import random
 import scripts.exploration_strategies as exploration_strategies
+import scripts.parse_results as result_writer
 
 class EvalTask(Eval):
     '''
@@ -30,7 +31,9 @@ class EvalTask(Eval):
         runs = 0
         successful_entropies = list()
         failed_entropies = list()
-        while runs < 200:
+        num_runs = 5
+        success_count = 0
+        while runs < num_runs:
             runs += 1
             if task_queue.qsize() == 0:
                 break
@@ -41,10 +44,14 @@ class EvalTask(Eval):
                 print("Evaluating: %s" % (traj['root']))
                 print("No. of trajectories left: %d" % (task_queue.qsize()))
                 entropies, success_status = cls.evaluate(env, model, r_idx, resnet, image_loader, region_detector, traj, args, lock, successes, failures, results)
-                if success_status:
-                    successful_entropies.append(float(entropies[0]))
+                if success_status: success_count += 1
+                if len(entropies) > 1: # not sure why this is sometimes untrue
+                    if success_status:
+                        successful_entropies.append(float(entropies[0]))
+                    else:
+                        failed_entropies.append(float(entropies[0]))
                 else:
-                    failed_entropies.append(float(entropies[0]))
+                    print(f"run: {runs}, no entropy")
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -52,15 +59,20 @@ class EvalTask(Eval):
                 sys.exit()
 
         # stop THOR
+        model_type = 'baseline'
+        if 'ls' in args.model_path:
+            model_type = 'ls'
         env.stop()
+        sr = float(success_count)/num_runs
+        result_writer.write_result("results.pkl", model_type, "greedy", (args.force_last_k_subgoals, sr))
         """
-        plt.title("Entropy over action unigrams")
+        plt.title("Entropy over action bigrams")
         se_np = np.array(successful_entropies)
         fe_np = np.array(failed_entropies)
         print("successful mean, std: ", (np.mean(se_np), np.var(se_np)))
         print("failed mean, std: ", (np.mean(fe_np), np.var(fe_np)))
-        plt.boxplot([successful_entropies, failed_entropies], labels=["successful", "failed"])
-        plt.show()
+        #plt.boxplot([successful_entropies, failed_entropies], labels=["successful", "failed"])
+        #plt.show()
         """
 
 
@@ -81,7 +93,6 @@ class EvalTask(Eval):
 
         # get expert actions for everything but the last subgoal
         num_subgoals = len(traj_data['turk_annotations']['anns'][r_idx]['high_descs'])
-        # (i wonder if just one subgoal is too easy?)
         expert_init_actions = [a['discrete_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] <= num_subgoals - 1 - args.force_last_k_subgoals]
         gt_actions = [a['discrete_action'] for a in traj_data['plan']['low_actions']]
 
@@ -100,6 +111,7 @@ class EvalTask(Eval):
         state_history = torch.tensor([])
         n = 0
         exploration_strat = exploration_strategies.get_random_exploration_sequence()
+        ep_history = []
         while not done:
             # break if max_steps reached
             if t >= args.max_steps:
@@ -151,19 +163,22 @@ class EvalTask(Eval):
                 feat['actions']['attention_mask'] = m_out['action_seq_mask']
                 state_history = m_out['states_seq']
                 m_pred = model.decode_prediction(m_out['actions'][0], curr_image, object_features[0])
+                in_a_loop = len(ep_history) > 6 and len(set(ep_history[-6:]) ) == 1
                 #print(m_pred)
                 # check if <<stop>> was predicted
-                if m_pred['action_low'] == cls.STOP_TOKEN or m_pred['action_low'] == cls.NEW_STOP_TOKEN:
+                if m_pred['action_low'] == cls.STOP_TOKEN or m_pred['action_low'] == cls.NEW_STOP_TOKEN or in_a_loop or len(ep_history) > 10:
                     print("\tpredicted STOP")
                     break
                 elif m_pred['action_low'] == cls.SUBGOAL_STOP_TOKEN:
                     print("\tpredicted [subgoal]")
                     instr_idx += 1
                     feat = model.featurize([traj_data], instr_idx=instr_idx)
+                    state_history = torch.tensor([])
                     continue
 
                 # get action and mask
                 action, mask = m_pred['action_low'], m_pred['action_low_mask']
+                ep_history.append(action)
                 mask = mask if model.has_interaction(action) else None
                 #plt.imshow(mask)
                 #plt.show()
@@ -198,7 +213,7 @@ class EvalTask(Eval):
             # use predicted action and mask (if available) to interact with the env
             t_success, _, _, err, _ = env.va_interact(action, interact_mask=mask, smooth_nav=args.smooth_nav, debug=args.debug)
             if not t_success:
-                print("err: ", err)
+                print("(t, err_: ", (t, err))
                 #breakpoint()
                 fails += 1
                 if fails >= args.max_fails:
