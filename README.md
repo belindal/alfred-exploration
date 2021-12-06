@@ -58,6 +58,6 @@ python3 models/eval/eval_seq2seq.py --model_path /home/sahit/alfred-exploration/
 
 - If you want to follow expert demonstrations until the last k subgoals, add the flag `--force_last_k_subgoals` with an int k
 - When this starts working for real, increase num_threads from 1 to e.g 3
-
-
+- Add flag `--topk <K>` to do top-K sampling with K candidiates
+- Add flag `--decode_temperature <temp>` to decode with temperature `temp`
 
