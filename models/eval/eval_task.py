@@ -14,6 +14,7 @@ from models.utils.debug_utils import plot_mask
 import gen.constants
 import random
 import scripts.exploration_strategies as exploration_strategies
+import scripts.parse_results as result_writer
 
 class EvalTask(Eval):
     '''
@@ -30,7 +31,9 @@ class EvalTask(Eval):
         runs = 0
         successful_entropies = list()
         failed_entropies = list()
-        while runs < 200:
+        num_runs = 5
+        success_count = 0
+        while runs < num_runs:
             runs += 1
             if task_queue.qsize() == 0:
                 break
@@ -41,6 +44,7 @@ class EvalTask(Eval):
                 print("Evaluating: %s" % (traj['root']))
                 print("No. of trajectories left: %d" % (task_queue.qsize()))
                 entropies, success_status = cls.evaluate(env, model, r_idx, resnet, image_loader, region_detector, traj, args, lock, successes, failures, results)
+                if success_status: success_count += 1
                 if len(entropies) > 1: # not sure why this is sometimes untrue
                     if success_status:
                         successful_entropies.append(float(entropies[0]))
@@ -55,7 +59,13 @@ class EvalTask(Eval):
                 sys.exit()
 
         # stop THOR
+        model_type = 'baseline'
+        if 'ls' in args.model_path:
+            model_type = 'ls'
         env.stop()
+        sr = float(success_count)/num_runs
+        result_writer.write_result("results.pkl", model_type, "greedy", (args.force_last_k_subgoals, sr))
+        """
         plt.title("Entropy over action bigrams")
         se_np = np.array(successful_entropies)
         fe_np = np.array(failed_entropies)
@@ -63,10 +73,11 @@ class EvalTask(Eval):
         print("failed mean, std: ", (np.mean(fe_np), np.var(fe_np)))
         #plt.boxplot([successful_entropies, failed_entropies], labels=["successful", "failed"])
         #plt.show()
+        """
 
 
     @classmethod
-    def evaluate(cls, env, model, r_idx, resnet, image_loader, region_detector, traj_data, args, lock, successes, failures, results, do_constrained_gen=False):
+    def evaluate(cls, env, model, r_idx, resnet, image_loader, region_detector, traj_data, args, lock, successes, failures, results, do_constrained_gen=True):
         # reset model
         #model.reset()
         entropies = []
