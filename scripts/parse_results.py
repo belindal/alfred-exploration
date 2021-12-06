@@ -1,6 +1,7 @@
 import collections
 import pickle
 import matplotlib.pyplot as plt
+import sys
 
 models = ["baseline", "ls"]
 methods = ["sample", "sample_ts", "greedy", "explore"]
@@ -34,6 +35,8 @@ def plot_results():
     plt.show()
 
 if __name__ == "__main__":
-    make_empty_results("results.pkl")
-    #plot_results()
+    if sys.argv[1] == "new":
+        make_empty_results("results.pkl")
+    else:
+        plot_results()
 
