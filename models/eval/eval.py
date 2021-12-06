@@ -76,7 +76,7 @@ class Eval(object):
         create queue of trajectories to be evaluated
         '''
         task_queue = self.manager.Queue()
-        files = self.splits[self.args.eval_split][:200]
+        files = self.splits[self.args.eval_split][50:200]
 
         # debugging: fast epoch
         if self.args.fast_epoch:
