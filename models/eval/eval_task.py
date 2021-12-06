@@ -127,7 +127,8 @@ class EvalTask(Eval):
                     feat["all_states"].to(device),
                     i_mask=feat["goal_representation"]["attention_mask"].to(device),
                     o_mask=feat['actions']['attention_mask'].to(device),
-                    continuations = [x + ":" for x in API_ACTIONS_SN[:8]] + [x + "," for x in API_ACTIONS_SN[8:]]
+                    continuations = [x + ":" for x in API_ACTIONS_SN[:8]] + [x + "," for x in API_ACTIONS_SN[8:]],
+                    temperature=args.decode_temperature,
                 )
                 scores_distribution = torch.distributions.Categorical(logits=scores)
                 entropy_continuations = scores_distribution.entropy()
@@ -141,7 +142,6 @@ class EvalTask(Eval):
                         object_list = API_ACTIONS_NATURALIZED + [",", ":", "in"] + seen_objects,
                         temperature=args.decode_temperature,
                         topk=args.topk,
-
                     )
                 if do_constrained_gen:
                     entropies.append(entropy_tg)

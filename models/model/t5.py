@@ -166,15 +166,15 @@ class GoalConditionedTransformer(nn.Module):
                 n_cands_to_sample_from = topk
             else:
                 n_cands_to_sample_from = 1
-            model_output.logits /= temperature
+            scaled_logits = model_output.logits / temperature
             if token_mask is not None:
-                next_logit_score_dist, next_logits_dist = model_output.logits[0][last_token_pos][token_mask].topk(n_cands_to_sample_from, dim=-1)
+                next_logit_score_dist, next_logits_dist = scaled_logits[0][last_token_pos][token_mask].topk(n_cands_to_sample_from, dim=-1)
             else:
-                next_logit_score_dist, next_logits_dist = model_output.logits[torch.arange(bs),last_token_pos].topk(n_cands_to_sample_from, dim=-1)
+                next_logit_score_dist, next_logits_dist = scaled_logits[torch.arange(bs),last_token_pos].topk(n_cands_to_sample_from, dim=-1)
             # TODO softmax here????
             scores_dist = torch.distributions.Categorical(logits = next_logit_score_dist)
             if unroll_idx == 0:
-                dist_for_logging = torch.distributions.Categorical(logits = model_output.logits[0][last_token_pos][token_mask])
+                dist_for_logging = torch.distributions.Categorical(logits = scaled_logits[0][last_token_pos][token_mask])
                 entropy = dist_for_logging.entropy()
             sampled_action_idx = scores_dist.sample()
             if token_mask is not None:
@@ -222,7 +222,7 @@ class GoalConditionedTransformer(nn.Module):
         scores = -torch.stack(scores, dim=1).sum(-1)
         return {'actions': next_actions, 'action_seq': action_sequence, 'action_seq_mask': action_sequence_mask, 'states_seq': image_sequence, 'log_probs': scores}, entropy
 
-    def score_all_continuations(self, goal_representation, action_seq_past, image_seq_w_curr, i_mask, o_mask, continuations: list):
+    def score_all_continuations(self, goal_representation, action_seq_past, image_seq_w_curr, i_mask, o_mask, continuations: list, temperature: int=1.0):
         bs = goal_representation.size(0)
 
         action_sequence, action_sequence_mask, image_sequence, fused_action_image_rep = self.setup_inputs_for_generate(
@@ -296,8 +296,9 @@ class GoalConditionedTransformer(nn.Module):
                 labels=next_action_pred,
             )
             loss_fct = nn.CrossEntropyLoss(ignore_index=-100, reduction='none')
+            scaled_logits = model_outputs.logits / temperature
             # (n_actions x n_tokens_in_actions)
-            action_scores = -loss_fct(model_outputs.logits.view(-1, model_outputs.logits.size(-1)), next_action_pred.view(-1))
+            action_scores = -loss_fct(scaled_logits.view(-1, scaled_logits.size(-1)), next_action_pred.view(-1))
             # (n_actions, n_tokens_in_actions) -> (n_actions)
             action_scores = action_scores.view(n_actions,-1).sum(-1)
             batch_action_scores.append(action_scores)
