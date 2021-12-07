@@ -49,10 +49,11 @@ def plot_results(results):
             results_sr = [x[1] for x in results[model][method]]
             results_k = [x[0] for x in results[model][method]]
             plt.plot(results_k, results_sr, label=f"{model}, {method}", color=colors[j], linestyle=lines[i])
-    plt.legend()
-    plt.title("Transformer Performance on Test Tasks")
-    plt.xlabel("Number of subgoals")
-    plt.ylabel("Success Rate")
+    plt.legend(fontsize='xx-large')
+    plt.title("Transformer Performance on Test Tasks", fontsize='xx-large')
+    plt.xlabel("Number of subgoals", fontsize='xx-large')
+    plt.ylabel("Success Rate", fontsize='xx-large')
+    plt.xticks(ticks=[1, 2, 3, 4])
     plt.show()
 
 if __name__ == "__main__":
